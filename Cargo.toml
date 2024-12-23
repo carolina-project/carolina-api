@@ -1,0 +1,10 @@
+[package]
+name = "carolina-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+plugin-api = { path = "../plugin-api-rs" }
+onebot-connect-interface = { path = "../onebot-connect/onebot-connect-interface" }
+dashmap = "*"
+uuid = "1"

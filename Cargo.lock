@@ -48,6 +48,7 @@ dependencies = [
  "dashmap",
  "onebot-connect-interface",
  "plugin-api",
+ "serde",
  "uuid",
 ]
 
@@ -299,6 +300,7 @@ dependencies = [
 [[package]]
 name = "ob-types-macro"
 version = "0.1.0"
+source = "git+https://github.com/carolina-project/onebot-types.git#5bbfd9aaf12e9e9afcce54e541c009419d5e6367"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -324,6 +326,7 @@ dependencies = [
 [[package]]
 name = "onebot-types"
 version = "0.1.0"
+source = "git+https://github.com/carolina-project/onebot-types.git#5bbfd9aaf12e9e9afcce54e541c009419d5e6367"
 dependencies = [
  "ob-types-macro",
  "serde",

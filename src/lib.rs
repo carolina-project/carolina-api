@@ -1,6 +1,6 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin};
 
-use context::{DynEventContext, GlobalContext};
+use context::{DynEventContext, EventContextTrait, GlobalContext};
 use onebot_connect_interface::{
     types::{
         ob12::event::{EventDetail, RawEvent},
@@ -14,7 +14,7 @@ use std::error::Error as ErrTrait;
 
 pub mod context;
 
-type BResult<T> = Result<T, Box<dyn ErrTrait + Send>>;
+type BResult<T> = Result<T, Box<dyn ErrTrait>>;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct EventSelected<E>
@@ -32,7 +32,7 @@ impl<E: OBEventSelector> EventSelected<E> {
         Ok(Self {
             id,
             time,
-            event: E::deserialize_event(event).map_err(|e| Box::new(e) as _)?,
+            event: E::deserialize_event(event)?,
         })
     }
 }
@@ -47,9 +47,9 @@ mod plugin {
     use onebot_connect_interface::types::{ob12::event::RawEvent, OBEventSelector};
     use std::error::Error as ErrTrait;
     use std::{error::Error, future::Future};
-    type BResult<T> = Result<T, Box<dyn ErrTrait + Send>>;
+    type BResult<T> = Result<T, Box<dyn ErrTrait>>;
 
-    pub trait CarolinaPlugin: Sync {
+    pub trait CarolinaPlugin {
         type Event: OBEventSelector + Send;
 
         fn init(
@@ -57,7 +57,7 @@ mod plugin {
             context: &dyn GlobalContext,
         ) -> impl Future<Output = BResult<()>> + Send + '_;
 
-        fn register_events(&self) -> impl Future<Output = Vec<(String, String)>> {
+        fn register_events(&self) -> impl Future<Output = Vec<(String, String)>> + Send + '_ {
             async {
                 Self::Event::get_selectable()
                     .iter()
@@ -66,52 +66,52 @@ mod plugin {
             }
         }
 
-        fn handle_event<'a, 'b: 'a, EC>(
-            &'a self,
+        fn handle_event<EC>(
+            &self,
             event: RawEvent,
-            context: &'b EC,
+            context: EC,
         ) -> impl Future<Output = BResult<()>> + Send + '_
         where
-            EC: EventContextTrait + Send + Sync,
+            EC: EventContextTrait + Send + 'static,
         {
-            async move {
-                self.handle_event_selected(EventSelected::parse(event)?, context)
-                    .await
-            }
+            let res = EventSelected::parse(event)
+                .map(|r| self.handle_event_selected(r, context))
+                .map_err(|e| e.to_string());
+            Box::pin(async move { res?.await })
         }
+
+        fn deinit(&mut self) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_;
 
         #[allow(unused)]
         fn handle_event_selected<EC>(
             &self,
             event: EventSelected<Self::Event>,
-            context: &EC,
+            context: EC,
         ) -> impl Future<Output = BResult<()>> + Send + '_
         where
             EC: EventContextTrait,
         {
             async { Ok(()) }
         }
-
-        fn deinit(&mut self) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_;
     }
 }
 
 type PinBox<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-type PinBoxResult<'a, T> = PinBox<'a, Result<T, Box<dyn ErrTrait + Send>>>;
+type PinBoxResult<'a, T> = PinBox<'a, Result<T, Box<dyn ErrTrait>>>;
 
 pub trait CarolinaPluginDyn {
     fn init(&mut self, context: &dyn GlobalContext) -> PinBoxResult<()>;
 
-    fn register_events(&mut self) -> PinBox<Vec<(String, String)>>;
+    fn register_events(&self) -> PinBox<Vec<(String, String)>>;
 
-    fn handle_event(&self, event: RawEvent, context: &DynEventContext) -> PinBoxResult<()>;
+    fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()>;
 
     fn deinit(&mut self) -> PinBoxResult<()>;
 }
 
-struct Placeholder;
+pub struct _Placeholder;
 
-impl OBEventSelector for Placeholder {
+impl OBEventSelector for _Placeholder {
     fn deserialize_event(_: EventDetail) -> Result<Self, DeserializerError>
     where
         Self: Sized,
@@ -128,17 +128,50 @@ impl OBEventSelector for Placeholder {
     }
 }
 
-impl CarolinaPlugin for dyn CarolinaPluginDyn {
-    type Event = Placeholder;
+impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
+    fn init(&mut self, context: &dyn GlobalContext) -> PinBoxResult<()> {
+        Box::pin(self.init(context))
+    }
 
-    fn init<G: GlobalContext>(
+    fn register_events(&self) -> PinBox<Vec<(String, String)>> {
+        Box::pin(self.register_events())
+    }
+
+    fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()> {
+        Box::pin(self.handle_event(event, context))
+    }
+
+    fn deinit(&mut self) -> PinBoxResult<()> {
+        Box::pin(self.deinit())
+    }
+}
+
+impl CarolinaPlugin for dyn CarolinaPluginDyn {
+    type Event = _Placeholder;
+
+    fn init(
         &mut self,
-        context: &G,
+        context: &dyn GlobalContext,
     ) -> impl Future<Output = BResult<()>> + Send + '_ {
         self.init(context)
     }
 
-    fn deinit(&mut self) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_ {
-        todo!()
+    fn register_events(&self) -> impl Future<Output = Vec<(String, String)>> {
+        self.register_events()
+    }
+
+    fn deinit(&mut self) -> impl Future<Output = BResult<()>> + Send + '_ {
+        self.deinit()
+    }
+
+    fn handle_event<EC>(
+        &self,
+        event: RawEvent,
+        context: EC,
+    ) -> impl Future<Output = BResult<()>> + Send + '_
+    where
+        EC: EventContextTrait + Send + 'static,
+    {
+        self.handle_event(event, DynEventContext::from(context.into_inner()))
     }
 }

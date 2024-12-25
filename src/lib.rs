@@ -1,6 +1,6 @@
-use std::{future::Future, pin::Pin};
+use std::{future::Future, ops::Deref, pin::Pin, sync::Arc};
 
-use context::{DynEventContext, EventContextTrait, GlobalContext};
+use context::{APICall, DynEventContext, Endpoint, EventContextTrait, GlobalContext};
 use onebot_connect_interface::{
     types::{
         ob12::event::{EventDetail, RawEvent},
@@ -42,10 +42,11 @@ impl<E: OBEventSelector> EventSelected<E> {
     dyn_t = CarolinaPluginDyn,
 )]
 mod plugin {
-    use crate::context::{EventContextTrait, GlobalContext};
+    use crate::context::{APICall, Endpoint, EventContextTrait, GlobalContext};
     use crate::EventSelected;
     use onebot_connect_interface::types::{ob12::event::RawEvent, OBEventSelector};
     use std::error::Error as ErrTrait;
+    use std::sync::Arc;
     use std::{error::Error, future::Future};
     type BResult<T> = Result<T, Box<dyn ErrTrait>>;
 
@@ -54,7 +55,7 @@ mod plugin {
 
         fn init(
             &mut self,
-            context: &dyn GlobalContext,
+            context: Arc<dyn GlobalContext>,
         ) -> impl Future<Output = BResult<()>> + Send + '_;
 
         fn register_events(&self) -> impl Future<Output = Vec<(String, String)>> + Send + '_ {
@@ -80,6 +81,15 @@ mod plugin {
             Box::pin(async move { res?.await })
         }
 
+        #[allow(unused)]
+        fn handle_api_call(
+            &self,
+            endpoint: Endpoint,
+            payload: Vec<u8>,
+        ) -> impl Future<Output = BResult<Vec<u8>>> + Send + '_ {
+            async { Err("api call not supported".into()) }
+        }
+
         fn deinit(&mut self) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_;
 
         #[allow(unused)]
@@ -100,15 +110,18 @@ type PinBox<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 type PinBoxResult<'a, T> = PinBox<'a, Result<T, Box<dyn ErrTrait>>>;
 
 pub trait CarolinaPluginDyn {
-    fn init(&mut self, context: &dyn GlobalContext) -> PinBoxResult<()>;
+    fn init(&mut self, context: Arc<dyn GlobalContext>) -> PinBoxResult<()>;
 
     fn register_events(&self) -> PinBox<Vec<(String, String)>>;
 
     fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()>;
 
+    fn handle_api_call(&self, endpoint: Endpoint, payload: Vec<u8>) -> PinBoxResult<Vec<u8>>;
+
     fn deinit(&mut self) -> PinBoxResult<()>;
 }
 
+#[doc(hidden)]
 pub struct _Placeholder;
 
 impl OBEventSelector for _Placeholder {
@@ -129,7 +142,7 @@ impl OBEventSelector for _Placeholder {
 }
 
 impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
-    fn init(&mut self, context: &dyn GlobalContext) -> PinBoxResult<()> {
+    fn init(&mut self, context: Arc<dyn GlobalContext>) -> PinBoxResult<()> {
         Box::pin(self.init(context))
     }
 
@@ -139,6 +152,10 @@ impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
 
     fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()> {
         Box::pin(self.handle_event(event, context))
+    }
+
+    fn handle_api_call(&self, endpoint: Endpoint, payload: Vec<u8>) -> PinBoxResult<Vec<u8>> {
+        Box::pin(self.handle_api_call(endpoint, payload))
     }
 
     fn deinit(&mut self) -> PinBoxResult<()> {
@@ -151,7 +168,7 @@ impl CarolinaPlugin for dyn CarolinaPluginDyn {
 
     fn init(
         &mut self,
-        context: &dyn GlobalContext,
+        context: Arc<dyn GlobalContext>,
     ) -> impl Future<Output = BResult<()>> + Send + '_ {
         self.init(context)
     }

@@ -1,8 +1,8 @@
 use std::{future::Future, pin::Pin};
 
 use context::{
-    APIResult, DynEventContext, Endpoint, EventContextTrait, GlobalContext, GlobalContextDyn,
-    PluginUid,
+    APICall, APIResult, DynEventContext, EventContextTrait, GlobalContext, GlobalContextDyn,
+    PluginContext, PluginRid,
 };
 use onebot_connect_interface::{
     types::ob12::event::EventDetail,
@@ -37,6 +37,65 @@ where
     pub event: E,
 }
 
+pub struct PluginInfoBuilder {
+    id: String,
+    name: Option<String>,
+    version: Option<String>,
+    author: Option<String>,
+    description: Option<String>,
+}
+
+impl PluginInfoBuilder {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: None,
+            version: None,
+            author: None,
+            description: None,
+        }
+    }
+
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub fn version(mut self, version: impl Into<String>) -> Self {
+        self.version = Some(version.into());
+        self
+    }
+
+    pub fn author(mut self, author: impl Into<String>) -> Self {
+        self.author = Some(author.into());
+        self
+    }
+
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    pub fn build(self) -> PluginInfo {
+        PluginInfo {
+            name: self.name.unwrap_or_else(|| self.id.clone()),
+            id: self.id,
+            version: self.version.unwrap_or_else(|| "0.1.0".into()),
+            author: self.author.unwrap_or_else(|| "anonymous".into()),
+            description: self.description,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PluginInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub description: Option<String>,
+}
+
 impl<E: OBEventSelector> EventSelected<E> {
     pub fn parse(event: RawEvent) -> BResult<Self> {
         let RawEvent { id, time, event } = event;
@@ -53,20 +112,23 @@ impl<E: OBEventSelector> EventSelected<E> {
     dyn_t = CarolinaPluginDyn,
 )]
 mod plugin {
-    use crate::context::{APIError, APIResult, PluginUid};
-    use crate::context::{Endpoint, EventContextTrait, GlobalContext};
-    use crate::EventSelected;
+    use crate::context::{APICall, APIError, APIResult, PluginContext, PluginRid};
+    use crate::context::{EventContextTrait, GlobalContext};
+    use crate::{EventSelected, PluginInfo};
     use onebot_connect_interface::types::{ob12::event::RawEvent, OBEventSelector};
     use std::error::Error as ErrTrait;
+    use std::future;
     use std::{error::Error, future::Future};
     type BResult<T> = Result<T, Box<dyn ErrTrait>>;
 
-    pub trait CarolinaPlugin {
+    pub trait CarolinaPlugin: Send + Sync + 'static {
         type Event: OBEventSelector + Send;
+
+        fn info(&self) -> PluginInfo;
 
         fn init<G: GlobalContext>(
             &mut self,
-            context: G,
+            context: PluginContext<G>,
         ) -> impl Future<Output = BResult<()>> + Send + '_;
 
         fn register_events(&self) -> impl Future<Output = Vec<(String, String)>> + Send + '_ {
@@ -95,11 +157,10 @@ mod plugin {
         #[allow(unused)]
         fn handle_api_call(
             &self,
-            src: PluginUid,
-            endpoint: Endpoint,
-            payload: Vec<u8>,
+            src: PluginRid,
+            call: APICall,
         ) -> impl Future<Output = APIResult> + Send + '_ {
-            async move { Err(APIError::EndpointNotFound(endpoint)) }
+            future::ready(Err(APIError::EndpointNotFound(call.endpoint)))
         }
 
         fn deinit(&mut self) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_;
@@ -123,19 +184,16 @@ type PinBox<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 type PinBoxResult<'a, T> = PinBox<'a, Result<T, Box<dyn ErrTrait>>>;
 type PinBoxAPIResult<'a> = PinBox<'a, APIResult>;
 
-pub trait CarolinaPluginDyn {
-    fn init(&mut self, context: Box<dyn GlobalContextDyn>) -> PinBoxResult<()>;
+pub trait CarolinaPluginDyn: Send + Sync + 'static {
+    fn info(&self) -> PluginInfo;
+
+    fn init(&mut self, context: PluginContext<Box<dyn GlobalContextDyn>>) -> PinBoxResult<()>;
 
     fn register_events(&self) -> PinBox<Vec<(String, String)>>;
 
     fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()>;
 
-    fn handle_api_call(
-        &self,
-        src: PluginUid,
-        endpoint: Endpoint,
-        payload: Vec<u8>,
-    ) -> PinBoxAPIResult;
+    fn handle_api_call(&self, src: PluginRid, call: APICall) -> PinBoxAPIResult;
 
     fn deinit(&mut self) -> PinBoxResult<()>;
 }
@@ -161,7 +219,11 @@ impl OBEventSelector for _Placeholder {
 }
 
 impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
-    fn init(&mut self, context: Box<dyn GlobalContextDyn>) -> PinBoxResult<()> {
+    fn info(&self) -> PluginInfo {
+        self.info()
+    }
+
+    fn init(&mut self, context: PluginContext<Box<dyn GlobalContextDyn>>) -> PinBoxResult<()> {
         Box::pin(self.init(context))
     }
 
@@ -173,13 +235,8 @@ impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
         Box::pin(self.handle_event(event, context))
     }
 
-    fn handle_api_call(
-        &self,
-        src: PluginUid,
-        endpoint: Endpoint,
-        payload: Vec<u8>,
-    ) -> PinBoxAPIResult {
-        Box::pin(self.handle_api_call(src, endpoint, payload))
+    fn handle_api_call(&self, src: PluginRid, call: APICall) -> PinBoxAPIResult {
+        Box::pin(self.handle_api_call(src, call))
     }
 
     fn deinit(&mut self) -> PinBoxResult<()> {
@@ -191,11 +248,15 @@ impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
 impl CarolinaPlugin for dyn CarolinaPluginDyn {
     type Event = _Placeholder;
 
+    fn info(&self) -> PluginInfo {
+        self.info()
+    }
+
     fn init<G: GlobalContext>(
         &mut self,
-        context: G,
+        context: PluginContext<G>,
     ) -> impl Future<Output = BResult<()>> + Send + '_ {
-        self.init(Box::new(context))
+        self.init(context.into_dyn())
     }
 
     fn register_events(&self) -> impl Future<Output = Vec<(String, String)>> {

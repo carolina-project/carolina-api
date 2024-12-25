@@ -6,15 +6,27 @@ edition = "2021"
 [dependencies]
 plugin-api = { path = "../plugin-api-rs" }
 onebot-connect-interface = { path = "../onebot-connect/onebot-connect-interface" }
-parking_lot = "0.12"
 uuid = "1"
 serde = "1"
 thiserror = "2"
 fxhash = "0.2"
-bincode = { version = "1", optional = true }
+log = { version = "0.4", optional = true }
+rand = { version = "0.8", optional = true }
 dashmap = { version = "6", optional = true }
+bincode = { version = "1", optional = true }
+parking_lot = { version = "0.12", optional = true }
+tokio = { version = "*", default-features = false, features = ["sync", "rt"], optional = true }
+dirs = { version = "5", optional = true }
 
 [features]
 default = ["plugin", "framework"]
 plugin = ["bincode"]
-framework = ["dashmap"]
+framework = [
+    "tokio",
+    "dashmap",
+    "onebot-connect-interface/app_recv",
+    "dep:parking_lot",
+    "dep:rand",
+    "dep:log",
+    "dep:dirs",
+]

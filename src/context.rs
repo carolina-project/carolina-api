@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{fmt::Display, future::Future, ops::Deref, pin::Pin};
 
 use onebot_connect_interface::app::{AppDyn, OBApp};
 use std::error::Error as ErrTrait;
@@ -31,12 +31,26 @@ macro_rules! wrap {
                 Self(id)
             }
         }
+        impl Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, concat!(stringify!($name), "({})"), self.0)
+            }
+        }
     };
 }
 
 wrap!(AppUid, u64);
 wrap!(PluginUid, u64);
 wrap!(Endpoint, u64);
+
+#[derive(Debug, Clone)]
+pub struct APICall {
+    pub target: PluginUid,
+    pub endpoint: Endpoint,
+    pub payload: Vec<u8>,
+}
+
+pub type APIResult = Result<Vec<u8>, APIError>;
 
 pub trait EventContextTrait {
     type App: OBApp + 'static;
@@ -110,8 +124,18 @@ impl EventContextTrait for DynEventContext {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum APIError {
+    #[error("target plugin not found: {0}")]
+    PluginNotFound(PluginUid),
+    #[error("endpoint not found: {0}")]
+    EndpointNotFound(Endpoint),
+    #[error("api call error: {0}")]
+    Error(#[from] Box<dyn ErrTrait>),
+}
+
 pub trait GlobalContext: Send + Sync + 'static {
-    fn get_app(&self, id: AppUid) -> Option<impl OBApp + 'static>;
+    fn get_app(&self, id: AppUid) -> Option<Box<dyn AppDyn>>;
 
     fn get_plugin_uid(&self, id: &str) -> Option<PluginUid>;
 
@@ -119,7 +143,7 @@ pub trait GlobalContext: Send + Sync + 'static {
         &self,
         src: PluginUid,
         call: APICall,
-    ) -> impl Future<Output = Result<Vec<u8>, Box<dyn ErrTrait>>> + Send + '_;
+    ) -> impl Future<Output = APIResult> + Send + '_;
 }
 
 pub trait GlobalContextDyn: Send + Sync + 'static {
@@ -131,7 +155,26 @@ pub trait GlobalContextDyn: Send + Sync + 'static {
         &self,
         src: PluginUid,
         call: APICall,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, Box<dyn ErrTrait>>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = APIResult> + Send + '_>>;
+}
+
+// For parameter passing
+impl GlobalContext for Box<dyn GlobalContextDyn> {
+    fn get_app(&self, id: AppUid) -> Option<Box<dyn AppDyn>> {
+        self.deref().get_app(id)
+    }
+
+    fn get_plugin_uid(&self, id: &str) -> Option<PluginUid> {
+        self.deref().get_plugin_uid(id)
+    }
+
+    fn call_plugin_api(
+        &self,
+        src: PluginUid,
+        call: APICall,
+    ) -> impl Future<Output = APIResult> + Send + '_ {
+        self.deref().call_plugin_api(src, call)
+    }
 }
 
 impl<T: GlobalContext> GlobalContextDyn for T {
@@ -147,16 +190,9 @@ impl<T: GlobalContext> GlobalContextDyn for T {
         &self,
         src: PluginUid,
         call: APICall,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, Box<dyn ErrTrait>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = APIResult> + Send + '_>> {
         Box::pin(self.call_plugin_api(src, call))
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct APICall {
-    pub target: PluginUid,
-    pub endpoint: Endpoint,
-    pub payload: Vec<u8>,
 }
 
 pub struct PluginContext<G: GlobalContext> {
@@ -168,7 +204,7 @@ impl<G: GlobalContext> PluginContext<G> {
         self.marker
     }
 
-    pub fn get_app<>(&self, id: impl Into<AppUid>) -> Option<impl OBApp + 'static> {
+    pub fn get_app(&self, id: impl Into<AppUid>) -> Option<impl OBApp + 'static> {
         let uid = id.into();
         self.global.get_app(uid)
     }

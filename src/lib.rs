@@ -1,7 +1,8 @@
 use std::{future::Future, pin::Pin};
 
 use context::{
-    DynEventContext, Endpoint, EventContextTrait, GlobalContext, GlobalContextDyn, PluginUid,
+    APIResult, DynEventContext, Endpoint, EventContextTrait, GlobalContext, GlobalContextDyn,
+    PluginUid,
 };
 use onebot_connect_interface::{
     types::ob12::event::EventDetail,
@@ -11,9 +12,13 @@ use plugin_api::plugin_api;
 use serde::{Deserialize, Serialize};
 use std::error::Error as ErrTrait;
 
+pub mod context;
+
 #[cfg(feature = "plugin")]
 pub mod call;
-pub mod context;
+#[cfg(feature = "framework")]
+pub mod framework;
+
 pub use onebot_connect_interface as oc_interface;
 pub use onebot_connect_interface::types;
 
@@ -48,7 +53,7 @@ impl<E: OBEventSelector> EventSelected<E> {
     dyn_t = CarolinaPluginDyn,
 )]
 mod plugin {
-    use crate::context::PluginUid;
+    use crate::context::{APIError, APIResult, PluginUid};
     use crate::context::{Endpoint, EventContextTrait, GlobalContext};
     use crate::EventSelected;
     use onebot_connect_interface::types::{ob12::event::RawEvent, OBEventSelector};
@@ -93,8 +98,8 @@ mod plugin {
             src: PluginUid,
             endpoint: Endpoint,
             payload: Vec<u8>,
-        ) -> impl Future<Output = BResult<Vec<u8>>> + Send + '_ {
-            async { Err("api call not supported".into()) }
+        ) -> impl Future<Output = APIResult> + Send + '_ {
+            async move { Err(APIError::EndpointNotFound(endpoint)) }
         }
 
         fn deinit(&mut self) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_;
@@ -116,6 +121,7 @@ mod plugin {
 
 type PinBox<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 type PinBoxResult<'a, T> = PinBox<'a, Result<T, Box<dyn ErrTrait>>>;
+type PinBoxAPIResult<'a> = PinBox<'a, APIResult>;
 
 pub trait CarolinaPluginDyn {
     fn init(&mut self, context: Box<dyn GlobalContextDyn>) -> PinBoxResult<()>;
@@ -129,7 +135,7 @@ pub trait CarolinaPluginDyn {
         src: PluginUid,
         endpoint: Endpoint,
         payload: Vec<u8>,
-    ) -> PinBoxResult<Vec<u8>>;
+    ) -> PinBoxAPIResult;
 
     fn deinit(&mut self) -> PinBoxResult<()>;
 }
@@ -172,7 +178,7 @@ impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
         src: PluginUid,
         endpoint: Endpoint,
         payload: Vec<u8>,
-    ) -> PinBoxResult<Vec<u8>> {
+    ) -> PinBoxAPIResult {
         Box::pin(self.handle_api_call(src, endpoint, payload))
     }
 

@@ -1,9 +1,7 @@
-use std::{ops::Deref, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use onebot_connect_interface::app::{AppDyn, OBApp};
-use parking_lot::RwLock;
-
-use crate::CarolinaPluginDyn;
+use std::error::Error as ErrTrait;
 
 macro_rules! wrap {
     ($name:ident, $ty:ty) => {
@@ -48,11 +46,11 @@ pub trait EventContextTrait {
     fn into_inner(self) -> (Self::App, AppUid);
 }
 
+/// Event context for static dispatching.
 pub struct EventContext<A: OBApp + 'static> {
     marker: AppUid,
     app: A,
 }
-
 impl<A: OBApp> EventContext<A> {
     pub fn new(marker: AppUid, app: A) -> Self {
         Self { marker, app }
@@ -77,6 +75,7 @@ impl<A: OBApp> EventContextTrait for EventContext<A> {
     }
 }
 
+/// Event context for dynamic dispatching.
 pub struct DynEventContext {
     app_uid: AppUid,
     app: Box<dyn AppDyn>,
@@ -112,26 +111,44 @@ impl EventContextTrait for DynEventContext {
 }
 
 pub trait GlobalContext: Send + Sync + 'static {
-    fn get_app(&self, id: AppUid) -> Option<Arc<dyn AppDyn>>;
+    fn get_app(&self, id: AppUid) -> Option<impl OBApp + 'static>;
 
     fn get_plugin_uid(&self, id: &str) -> Option<PluginUid>;
 
-    fn call_plugin_api(&self, src: PluginUid, call: APICall) -> 
-
-    fn context_ref(&self) -> Arc<dyn GlobalContext>;
+    fn call_plugin_api(
+        &self,
+        src: PluginUid,
+        call: APICall,
+    ) -> impl Future<Output = Result<Vec<u8>, Box<dyn ErrTrait>>> + Send + '_;
 }
 
-impl GlobalContext for Arc<dyn GlobalContext> {
-    fn get_app(&self, id: AppUid) -> Option<Arc<dyn AppDyn>> {
-        self.deref().get_app(id)
+pub trait GlobalContextDyn: Send + Sync + 'static {
+    fn get_app(&self, id: AppUid) -> Option<Box<dyn AppDyn>>;
+
+    fn get_plugin_uid(&self, id: &str) -> Option<PluginUid>;
+
+    fn call_plugin_api(
+        &self,
+        src: PluginUid,
+        call: APICall,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, Box<dyn ErrTrait>>> + Send + '_>>;
+}
+
+impl<T: GlobalContext> GlobalContextDyn for T {
+    fn get_app(&self, id: AppUid) -> Option<Box<dyn AppDyn>> {
+        self.get_app(id).map(|a| Box::new(a) as _)
     }
 
     fn get_plugin_uid(&self, id: &str) -> Option<PluginUid> {
-        self.deref().get_plugin_uid(id)
+        self.get_plugin_uid(id)
     }
 
-    fn context_ref(&self) -> Arc<dyn GlobalContext> {
-        self.clone()
+    fn call_plugin_api(
+        &self,
+        src: PluginUid,
+        call: APICall,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, Box<dyn ErrTrait>>> + Send + '_>> {
+        Box::pin(self.call_plugin_api(src, call))
     }
 }
 
@@ -146,14 +163,14 @@ pub struct PluginContext<G: GlobalContext> {
     marker: PluginUid,
     global: G,
 }
-
-impl PluginContext {
+impl<G: GlobalContext> PluginContext<G> {
     pub fn marker(&self) -> PluginUid {
         self.marker
     }
 
-    pub fn get_app(&self, id: impl Into<AppUid>) -> Option<Arc<dyn AppDyn>> {
-        self.global.get_app(id.into())
+    pub fn get_app<>(&self, id: impl Into<AppUid>) -> Option<impl OBApp + 'static> {
+        let uid = id.into();
+        self.global.get_app(uid)
     }
 
     pub fn get_plugin_uid(&self, id: impl AsRef<str>) -> Option<PluginUid> {

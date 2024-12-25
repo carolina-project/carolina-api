@@ -42,7 +42,7 @@ impl<E: OBEventSelector> EventSelected<E> {
     dyn_t = CarolinaPluginDyn,
 )]
 mod plugin {
-    use crate::context::{APICall, Endpoint, EventContextTrait, GlobalContext};
+    use crate::context::{Endpoint, EventContextTrait, GlobalContext};
     use crate::EventSelected;
     use onebot_connect_interface::types::{ob12::event::RawEvent, OBEventSelector};
     use std::error::Error as ErrTrait;

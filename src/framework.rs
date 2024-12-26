@@ -1,4 +1,4 @@
-use std::{hash::Hash, path::PathBuf, str::FromStr, sync::Arc};
+use std::{hash::Hash, io, path::PathBuf, str::FromStr, sync::Arc};
 
 use dashmap::DashMap;
 use fxhash::FxHashMap;
@@ -6,7 +6,7 @@ use onebot_connect_interface::app::{AppDyn, MessageSource, OBApp, OBAppProvider,
 use rand::Rng;
 use tokio::sync::RwLock;
 
-use crate::{context::*, BResult, CarolinaPlugin, PluginInfo, PluginInfoBuilder};
+use crate::{context::*, BResult, CarolinaPlugin, PluginInfo};
 
 #[derive(Default, Debug)]
 pub struct EventMapper {
@@ -70,6 +70,14 @@ impl DirConfig {
             config_path,
             data_path,
         }
+    }
+
+    pub async fn ensure_dirs(&self) -> io::Result<()> {
+        use tokio::fs;
+
+        fs::create_dir_all(&self.config_path).await?;
+        fs::create_dir_all(&self.data_path).await?;
+        Ok(())
     }
 }
 impl Default for DirConfig {
@@ -179,7 +187,7 @@ impl<P: CarolinaPlugin> GlobalContextImpl<P> {
                 Some(info) => info.1,
                 None => {
                     log::error!("cannot find plugin info({rid})");
-                    PluginInfoBuilder::new("unknown").build()
+                    continue;
                 }
             };
             plugins.insert(rid, (info, map.remove(&rid).unwrap()));

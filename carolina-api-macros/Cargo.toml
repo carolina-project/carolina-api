@@ -1,0 +1,12 @@
+[package]
+name = "carolina-api-macros"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+syn =  { version = "2", features = ["full", "visit-mut"]}
+proc-macro2 = { version = "1" }
+quote = { version = "1" }
+
+[lib]
+proc-macro = true

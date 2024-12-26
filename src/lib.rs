@@ -8,8 +8,8 @@ use context::{
     APICall, APIResult, DynEventContext, EventContextTrait, GlobalContext, GlobalContextDyn,
     PluginContext, PluginRid,
 };
-use plugin_api::plugin_api;
 use std::error::Error as ErrTrait;
+use carolina_api_macros::plugin_api;
 
 pub mod context;
 
@@ -36,8 +36,9 @@ where
     pub event: E,
 }
 
+#[derive(Debug, Default)]
 pub struct PluginInfoBuilder {
-    id: String,
+    id: Option<String>,
     name: Option<String>,
     version: Option<String>,
     author: Option<String>,
@@ -45,16 +46,6 @@ pub struct PluginInfoBuilder {
 }
 
 impl PluginInfoBuilder {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            name: None,
-            version: None,
-            author: None,
-            description: None,
-        }
-    }
-
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
@@ -76,12 +67,19 @@ impl PluginInfoBuilder {
     }
 
     pub fn build(self) -> PluginInfo {
+        let id = self.id.unwrap_or_else(|| env!("CARGO_PKG_NAME").to_owned());
         PluginInfo {
-            name: self.name.unwrap_or_else(|| self.id.clone()),
-            id: self.id,
-            version: self.version.unwrap_or_else(|| "0.1.0".into()),
-            author: self.author.unwrap_or_else(|| "anonymous".into()),
-            description: self.description,
+            name: self.name.unwrap_or_else(|| id.clone()),
+            id,
+            version: self
+                .version
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned()),
+            author: self
+                .author
+                .unwrap_or_else(|| env!("CARGO_PKG_AUTHORS").to_owned()),
+            description: self
+                .description
+                .unwrap_or_else(|| env!("CARGO_PKG_DESCRIPTION").to_owned()),
         }
     }
 }
@@ -92,7 +90,7 @@ pub struct PluginInfo {
     pub name: String,
     pub version: String,
     pub author: String,
-    pub description: Option<String>,
+    pub description: String,
 }
 
 #[cfg(feature = "plugin")]
@@ -127,14 +125,16 @@ mod plugin {
     use crate::context::{APICall, APIError, APIResult, PluginContext, PluginRid};
     use crate::context::{EventContextTrait, GlobalContext};
     use crate::types::ob12::event::RawEvent;
-    use crate::PluginInfo;
+    use crate::{PluginInfo, PluginInfoBuilder};
     use std::error::Error as ErrTrait;
     use std::future;
     use std::{error::Error, future::Future};
     type BResult<T> = Result<T, Box<dyn ErrTrait>>;
 
     pub trait CarolinaPlugin: Send + Sync + 'static {
-        fn info(&self) -> PluginInfo;
+        fn info(&self) -> PluginInfo {
+            PluginInfoBuilder::default().build()
+        }
 
         #[allow(unused)]
         fn init<G: GlobalContext>(

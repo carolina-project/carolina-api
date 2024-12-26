@@ -91,18 +91,27 @@ name = "carolina-api"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "carolina-api-macros",
  "dashmap",
  "dirs",
  "fxhash",
  "log",
  "onebot-connect-interface",
  "parking_lot",
- "plugin-api",
  "rand",
  "serde",
  "thiserror 2.0.9",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "carolina-api-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -507,22 +516,6 @@ name = "pin-project-lite"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "915a1e146535de9163f3987b8944ed8cf49a18bb0056bcebcdcece385cece4ff"
-
-[[package]]
-name = "plugin-api"
-version = "0.1.0"
-dependencies = [
- "plugin-api-macros",
-]
-
-[[package]]
-name = "plugin-api-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
 
 [[package]]
 name = "powerfmt"

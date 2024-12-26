@@ -1,15 +1,10 @@
-use std::{future::Future, pin::Pin};
+use std::{future::Future, ops::{Deref, DerefMut}, pin::Pin};
 
 use context::{
     APICall, APIResult, DynEventContext, EventContextTrait, GlobalContext, GlobalContextDyn,
     PluginContext, PluginRid,
 };
-use onebot_connect_interface::{
-    types::ob12::event::EventDetail,
-    value::{DeserializerError, SerializerError},
-};
 use plugin_api::plugin_api;
-use serde::{Deserialize, Serialize};
 use std::error::Error as ErrTrait;
 
 pub mod context;
@@ -27,7 +22,7 @@ pub use types::{ob12::event::RawEvent, OBEventSelector};
 type BResult<T> = Result<T, Box<dyn ErrTrait>>;
 
 #[cfg(feature = "plugin")]
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(serde::Deserialize, serde::Serialize, Debug, Clone)]
 pub struct EventSelected<E>
 where
     E: OBEventSelector,
@@ -96,7 +91,9 @@ pub struct PluginInfo {
     pub description: Option<String>,
 }
 
-impl<E: OBEventSelector> EventSelected<E> {
+
+#[cfg(feature = "plugin")]
+impl<E: types::OBEventSelector> EventSelected<E> {
     pub fn parse(event: RawEvent) -> BResult<Self> {
         let RawEvent { id, time, event } = event;
         Ok(Self {
@@ -107,6 +104,18 @@ impl<E: OBEventSelector> EventSelected<E> {
     }
 }
 
+pub trait SelectorExt {
+    fn subscribe() -> Vec<(String, Option<String>)>;
+}
+impl<T: OBEventSelector> SelectorExt for T {
+    fn subscribe() -> Vec<(String, Option<String>)> {
+        Self::get_selectable()
+            .iter()
+            .map(|desc| (desc.r#type.to_owned(), Some(desc.detail_type.to_owned())))
+            .collect()
+    }
+}
+
 #[plugin_api(
     ignore(handle_event_selected),
     dyn_t = CarolinaPluginDyn,
@@ -114,32 +123,31 @@ impl<E: OBEventSelector> EventSelected<E> {
 mod plugin {
     use crate::context::{APICall, APIError, APIResult, PluginContext, PluginRid};
     use crate::context::{EventContextTrait, GlobalContext};
-    use crate::{EventSelected, PluginInfo};
-    use onebot_connect_interface::types::{ob12::event::RawEvent, OBEventSelector};
+    use crate::types::ob12::event::RawEvent;
+    use crate::PluginInfo;
     use std::error::Error as ErrTrait;
     use std::future;
     use std::{error::Error, future::Future};
     type BResult<T> = Result<T, Box<dyn ErrTrait>>;
 
     pub trait CarolinaPlugin: Send + Sync + 'static {
-        type Event: OBEventSelector + Send;
-
         fn info(&self) -> PluginInfo;
 
+        #[allow(unused)]
         fn init<G: GlobalContext>(
             &mut self,
             context: PluginContext<G>,
-        ) -> impl Future<Output = BResult<()>> + Send + '_;
-
-        fn register_events(&self) -> impl Future<Output = Vec<(String, String)>> + Send + '_ {
-            async {
-                Self::Event::get_selectable()
-                    .iter()
-                    .map(|desc| (desc.r#type.to_owned(), desc.detail_type.to_owned()))
-                    .collect()
-            }
+        ) -> impl Future<Output = BResult<()>> + Send + '_ {
+            async { Ok(()) }
         }
 
+        fn subscribe_events(
+            &self,
+        ) -> impl Future<Output = Vec<(String, Option<String>)>> + Send + '_ {
+            future::ready(vec![])
+        }
+
+        #[allow(unused)]
         fn handle_event<EC>(
             &self,
             event: RawEvent,
@@ -148,10 +156,7 @@ mod plugin {
         where
             EC: EventContextTrait + Send + 'static,
         {
-            let res = EventSelected::parse(event)
-                .map(|r| self.handle_event_selected(r, context))
-                .map_err(|e| e.to_string());
-            Box::pin(async move { res?.await })
+            async { Ok(()) }
         }
 
         #[allow(unused)]
@@ -163,18 +168,7 @@ mod plugin {
             future::ready(Err(APIError::EndpointNotFound(call.endpoint)))
         }
 
-        fn deinit(&mut self) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_;
-
-        #[allow(unused)]
-        #[cfg(feature = "plugin")]
-        fn handle_event_selected<EC>(
-            &self,
-            event: EventSelected<Self::Event>,
-            context: EC,
-        ) -> impl Future<Output = BResult<()>> + Send + '_
-        where
-            EC: EventContextTrait,
-        {
+        fn deinit(&mut self) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_ {
             async { Ok(()) }
         }
     }
@@ -189,33 +183,13 @@ pub trait CarolinaPluginDyn: Send + Sync + 'static {
 
     fn init(&mut self, context: PluginContext<Box<dyn GlobalContextDyn>>) -> PinBoxResult<()>;
 
-    fn register_events(&self) -> PinBox<Vec<(String, String)>>;
+    fn subscribe_events(&self) -> PinBox<Vec<(String, Option<String>)>>;
 
     fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()>;
 
     fn handle_api_call(&self, src: PluginRid, call: APICall) -> PinBoxAPIResult;
 
     fn deinit(&mut self) -> PinBoxResult<()>;
-}
-
-#[doc(hidden)]
-pub struct _Placeholder;
-
-impl OBEventSelector for _Placeholder {
-    fn deserialize_event(_: EventDetail) -> Result<Self, DeserializerError>
-    where
-        Self: Sized,
-    {
-        Err(serde::de::Error::custom("not supported"))
-    }
-
-    fn serialize_event(&self) -> Result<EventDetail, SerializerError> {
-        Err(serde::ser::Error::custom("not supported"))
-    }
-
-    fn get_selectable() -> &'static [onebot_connect_interface::types::base::EventDesc] {
-        &[]
-    }
 }
 
 impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
@@ -227,8 +201,8 @@ impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
         Box::pin(self.init(context))
     }
 
-    fn register_events(&self) -> PinBox<Vec<(String, String)>> {
-        Box::pin(self.register_events())
+    fn subscribe_events(&self) -> PinBox<Vec<(String, Option<String>)>> {
+        Box::pin(self.subscribe_events())
     }
 
     fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()> {
@@ -245,26 +219,32 @@ impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
 }
 
 // For dynamic dispatching
-impl CarolinaPlugin for dyn CarolinaPluginDyn {
-    type Event = _Placeholder;
-
+impl CarolinaPlugin for Box<dyn CarolinaPluginDyn> {
     fn info(&self) -> PluginInfo {
-        self.info()
+        self.deref().info()
     }
 
     fn init<G: GlobalContext>(
         &mut self,
         context: PluginContext<G>,
     ) -> impl Future<Output = BResult<()>> + Send + '_ {
-        self.init(context.into_dyn())
+        self.deref_mut().init(context.into_dyn())
     }
 
-    fn register_events(&self) -> impl Future<Output = Vec<(String, String)>> {
-        self.register_events()
+    fn subscribe_events(&self) -> impl Future<Output = Vec<(String, Option<String>)>> + Send + '_ {
+        self.deref().subscribe_events()
+    }
+
+    fn handle_api_call(
+        &self,
+        src: PluginRid,
+        call: APICall,
+    ) -> impl Future<Output = APIResult> + Send + '_ {
+        self.deref().handle_api_call(src, call)
     }
 
     fn deinit(&mut self) -> impl Future<Output = BResult<()>> + Send + '_ {
-        self.deinit()
+        self.deref_mut().deinit()
     }
 
     fn handle_event<EC>(
@@ -275,6 +255,6 @@ impl CarolinaPlugin for dyn CarolinaPluginDyn {
     where
         EC: EventContextTrait + Send + 'static,
     {
-        self.handle_event(event, DynEventContext::from(context.into_inner()))
+        self.deref().handle_event(event, DynEventContext::from(context.into_inner()))
     }
 }

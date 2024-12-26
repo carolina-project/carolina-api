@@ -19,7 +19,6 @@ tokio = { version = "*", default-features = false, features = ["sync", "rt"], op
 dirs = { version = "5", optional = true }
 
 [features]
-default = ["plugin", "framework"]
 plugin = ["bincode"]
 framework = [
     "tokio",

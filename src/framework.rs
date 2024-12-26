@@ -11,16 +11,17 @@ use crate::{context::*, CarolinaPlugin, PluginInfo, PluginInfoBuilder};
 #[derive(Default, Debug)]
 pub struct EventMapper {
     type2uid: DashMap<String, DashMap<String, Vec<PluginRid>>>,
-    uid2type: DashMap<PluginRid, Vec<(String, String)>>,
+    uid2type: DashMap<PluginRid, Vec<(String, Option<String>)>>,
 }
 
 impl EventMapper {
-    pub fn register(&self, types: Vec<(String, String)>, rid: PluginRid) {
+    pub fn subscribe(&self, types: Vec<(String, Option<String>)>, rid: PluginRid) {
         for (ty, detail_ty) in &types {
-            self.type2uid
+            self
+                .type2uid
                 .entry(ty.clone())
                 .or_default()
-                .entry(detail_ty.clone())
+                .entry(detail_ty.clone().unwrap_or_default())
                 .or_default()
                 .push(rid);
         }
@@ -35,7 +36,16 @@ impl EventMapper {
     ) -> Vec<PluginRid> {
         self.type2uid
             .get(ty.as_ref())
-            .and_then(|map| map.get(detail_ty.as_ref()).map(|r| r.clone()))
+            .map(|map| {
+                let mut collected = map
+                    .get(detail_ty.as_ref())
+                    .map(|r| r.clone())
+                    .unwrap_or_default();
+                if let Some(sub) = map.get("") {
+                    sub.iter().for_each(|r| collected.push(*r));
+                }
+                collected
+            })
             .unwrap_or_default()
     }
 }
@@ -115,7 +125,7 @@ impl<P: CarolinaPlugin> GlobalContextImpl<P> {
         let info = plugin.info();
         self.inner
             .event_mapper
-            .register(plugin.register_events().await, rid);
+            .subscribe(plugin.subscribe_events().await, rid);
         map.insert(rid, plugin);
         self.inner.plugin_id2rid.insert(info.id.clone(), rid);
         self.inner.plugin_rid2info.insert(rid, info);

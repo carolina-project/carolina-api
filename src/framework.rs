@@ -6,7 +6,7 @@ use onebot_connect_interface::app::{AppDyn, MessageSource, OBApp, OBAppProvider,
 use rand::Rng;
 use tokio::sync::RwLock;
 
-use crate::{context::*, CarolinaPlugin, PluginInfo, PluginInfoBuilder};
+use crate::{context::*, BResult, CarolinaPlugin, PluginInfo, PluginInfoBuilder};
 
 #[derive(Default, Debug)]
 pub struct EventMapper {
@@ -17,8 +17,7 @@ pub struct EventMapper {
 impl EventMapper {
     pub fn subscribe(&self, types: Vec<(String, Option<String>)>, rid: PluginRid) {
         for (ty, detail_ty) in &types {
-            self
-                .type2uid
+            self.type2uid
                 .entry(ty.clone())
                 .or_default()
                 .entry(detail_ty.clone().unwrap_or_default())
@@ -73,6 +72,11 @@ impl DirConfig {
         }
     }
 }
+impl Default for DirConfig {
+    fn default() -> Self {
+        Self::new(None, None)
+    }
+}
 
 pub struct GlobalContextInner<P: CarolinaPlugin> {
     plugin_rid_map: RwLock<FxHashMap<PluginRid, P>>,
@@ -86,6 +90,14 @@ pub struct GlobalContextInner<P: CarolinaPlugin> {
 
 pub struct GlobalContextImpl<P: CarolinaPlugin> {
     inner: Arc<GlobalContextInner<P>>,
+}
+
+impl<P: CarolinaPlugin> Clone for GlobalContextImpl<P> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 pub struct GlobalDestructed<P: CarolinaPlugin> {
@@ -112,7 +124,7 @@ impl<P: CarolinaPlugin> GlobalContextImpl<P> {
         }
     }
 
-    pub async fn append_plugin(&self, plugin: P) -> PluginRid {
+    pub async fn init_plugin(&self, mut plugin: P, info: PluginInfo) -> BResult<PluginRid> {
         let mut map = self.inner.plugin_rid_map.write().await;
         let mut rid: PluginRid;
         let mut rng = rand::thread_rng();
@@ -122,7 +134,7 @@ impl<P: CarolinaPlugin> GlobalContextImpl<P> {
                 break;
             }
         }
-        let info = plugin.info();
+        plugin.init(PluginContext::new(rid, self.clone())).await?;
         self.inner
             .event_mapper
             .subscribe(plugin.subscribe_events().await, rid);
@@ -130,7 +142,23 @@ impl<P: CarolinaPlugin> GlobalContextImpl<P> {
         self.inner.plugin_id2rid.insert(info.id.clone(), rid);
         self.inner.plugin_rid2info.insert(rid, info);
 
-        rid
+        Ok(rid)
+    }
+
+    pub async fn post_init(&self, on_err: impl Fn(PluginRid, String, Box<dyn std::error::Error>)) {
+        for (rid, ele) in self.inner.plugin_rid_map.write().await.iter_mut() {
+            let id = self
+                .inner
+                .plugin_rid2info
+                .get(rid)
+                .map(|r| r.id.clone())
+                .unwrap_or_else(|| "unknown".into());
+
+            log::info!("post-initializing plugin: {id}({rid})");
+            if let Err(e) = ele.post_init().await {
+                on_err(*rid, id, e);
+            }
+        }
     }
 
     /// Destruct global context for deinitiialization.
@@ -165,6 +193,10 @@ impl<P: CarolinaPlugin> GlobalContextImpl<P> {
             plugins,
             shared_apps: apps,
         }
+    }
+
+    pub fn get_rid_map(&self) -> &DashMap<PluginRid, PluginInfo> {
+        &self.inner.plugin_rid2info
     }
 }
 

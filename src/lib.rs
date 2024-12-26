@@ -1,4 +1,8 @@
-use std::{future::Future, ops::{Deref, DerefMut}, pin::Pin};
+use std::{
+    future::Future,
+    ops::{Deref, DerefMut},
+    pin::Pin,
+};
 
 use context::{
     APICall, APIResult, DynEventContext, EventContextTrait, GlobalContext, GlobalContextDyn,
@@ -91,7 +95,6 @@ pub struct PluginInfo {
     pub description: Option<String>,
 }
 
-
 #[cfg(feature = "plugin")]
 impl<E: types::OBEventSelector> EventSelected<E> {
     pub fn parse(event: RawEvent) -> BResult<Self> {
@@ -141,6 +144,10 @@ mod plugin {
             async { Ok(()) }
         }
 
+        fn post_init(&mut self) -> impl Future<Output = BResult<()>> + Send + '_ {
+            async { Ok(()) }
+        }
+
         fn subscribe_events(
             &self,
         ) -> impl Future<Output = Vec<(String, Option<String>)>> + Send + '_ {
@@ -183,6 +190,8 @@ pub trait CarolinaPluginDyn: Send + Sync + 'static {
 
     fn init(&mut self, context: PluginContext<Box<dyn GlobalContextDyn>>) -> PinBoxResult<()>;
 
+    fn post_init(&mut self) -> PinBoxResult<()>;
+
     fn subscribe_events(&self) -> PinBox<Vec<(String, Option<String>)>>;
 
     fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()>;
@@ -199,6 +208,10 @@ impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
 
     fn init(&mut self, context: PluginContext<Box<dyn GlobalContextDyn>>) -> PinBoxResult<()> {
         Box::pin(self.init(context))
+    }
+
+    fn post_init(&mut self) -> PinBoxResult<()> {
+        Box::pin(self.post_init())
     }
 
     fn subscribe_events(&self) -> PinBox<Vec<(String, Option<String>)>> {
@@ -231,6 +244,10 @@ impl CarolinaPlugin for Box<dyn CarolinaPluginDyn> {
         self.deref_mut().init(context.into_dyn())
     }
 
+    fn post_init(&mut self) -> impl Future<Output = BResult<()>> + Send + '_ {
+        self.deref_mut().post_init()
+    }
+
     fn subscribe_events(&self) -> impl Future<Output = Vec<(String, Option<String>)>> + Send + '_ {
         self.deref().subscribe_events()
     }
@@ -255,6 +272,7 @@ impl CarolinaPlugin for Box<dyn CarolinaPluginDyn> {
     where
         EC: EventContextTrait + Send + 'static,
     {
-        self.deref().handle_event(event, DynEventContext::from(context.into_inner()))
+        self.deref()
+            .handle_event(event, DynEventContext::from(context.into_inner()))
     }
 }

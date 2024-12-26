@@ -279,6 +279,10 @@ pub struct PluginContext<G: GlobalContext> {
     global: G,
 }
 impl<G: GlobalContext> PluginContext<G> {
+    pub fn new(marker: PluginRid, global: G) -> Self {
+        Self { marker, global }
+    }
+
     pub fn marker(&self) -> PluginRid {
         self.marker
     }

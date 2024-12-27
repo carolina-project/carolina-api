@@ -9,6 +9,9 @@ pub(crate) mod api {
         LitByteStr, Meta, PatType, Path, Signature, Token, TraitItem, UsePath,
     };
 
+    pub static EXPORT_FN_HASH: &str =
+        "66a798624914b7174826b51e4baeb73b9695d3f333eac18069b81cf51d5029e4";
+
     pub fn camel_to_snake_case(s: &str) -> String {
         let mut result = String::new();
         for (i, c) in s.chars().enumerate() {
@@ -115,7 +118,10 @@ pub(crate) mod api {
 
         let call_site = Span::call_site();
         let cmptime_fn_ident = Ident::new(&format!("__make_cmptime_{name_snake}"), call_site);
-        let dyn_fn_ident = Ident::new(&format!("__make_dyn_{name_snake}"), call_site);
+        let dyn_fn_ident = Ident::new(
+            &format!("__{EXPORT_FN_HASH}_make_dyn_{name_snake}"),
+            call_site,
+        );
         let export_plug_macro = quote! {
             /// Export plugin struct.
             #[macro_export]
@@ -127,6 +133,7 @@ pub(crate) mod api {
                     }
 
                     #[doc(hidden)]
+                    #[cfg(any(dylib, cdylib))]
                     #[no_mangle]
                     pub extern "Rust" fn #dyn_fn_ident() -> Box<dyn #dyn_ty_macro> {
                         Box::new(<$plug as Default>::default())

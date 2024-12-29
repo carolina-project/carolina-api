@@ -114,7 +114,7 @@ pub(crate) mod api {
         });
 
         let dyn_ty = dyn_ty.unwrap_or_else(|| trait_name.clone().into());
-        let dyn_ty_macro = quote! { $crate::#dyn_ty };
+        let dyn_ty_plugin = quote! { $crate::#dyn_ty };
 
         let call_site = Span::call_site();
         let cmptime_fn_ident = Ident::new(&format!("__make_cmptime_{name_snake}"), call_site);
@@ -133,10 +133,9 @@ pub(crate) mod api {
                     }
 
                     #[doc(hidden)]
-                    #[cfg(any(dylib, cdylib))]
                     #[no_mangle]
-                    pub extern "Rust" fn #dyn_fn_ident() -> Box<dyn #dyn_ty_macro> {
-                        Box::new(<$plug as Default>::default())
+                    pub extern "Rust" fn #dyn_fn_ident() -> #dyn_ty_plugin {
+                        #dyn_ty_plugin::new(<$plug as Default>::default())
                     }
 
                     #[doc(hidden)]
@@ -155,7 +154,7 @@ pub(crate) mod api {
             /// Static name for the dynamic plugin loader function.
             pub static DYN_LOADER_FN_NAME: &'static [u8] = #static_name_dyn;
             /// Dynamic plugin loader entry.
-            pub type DynPluginLoader = extern "Rust" fn() -> Box<dyn #dyn_ty>;
+            pub type DynPluginLoader = extern "Rust" fn() -> #dyn_ty;
 
             pub use carolina_api_macros::__generate_enum;
 
@@ -168,7 +167,7 @@ pub(crate) mod api {
                     #[doc(hidden)]
                     mod __plugin_dispatcher {
                         use super::*;
-                        use #dyn_ty_macro as DynTy;
+                        use #dyn_ty_plugin as DynTy;
                         use $crate::#trait_name as Trait;
                         #inner_tt
 
@@ -298,7 +297,7 @@ pub(crate) mod api {
         let expanded = quote! {
              #vis enum #name {
                 #(#var_names(::#items::__ExportedPlugin),)*
-                DynPlugin(Box<dyn #dyn_ty>),
+                DynPlugin(#dyn_ty),
             }
 
             #(
@@ -309,8 +308,8 @@ pub(crate) mod api {
                 }
             )*
 
-            impl From<Box<dyn #dyn_ty>> for #name {
-                fn from(plug: Box<dyn #dyn_ty>) -> Self {
+            impl From<#dyn_ty> for #name {
+                fn from(plug: #dyn_ty) -> Self {
                     Self::DynPlugin(plug)
                 }
             }

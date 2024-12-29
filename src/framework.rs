@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use fxhash::FxHashMap;
 use onebot_connect_interface::app::{AppDyn, MessageSource, OBApp, OBAppProvider, RecvMessage};
 use rand::Rng;
-use tokio::sync::RwLock;
+use tokio::{fs, sync::RwLock};
 
 use crate::{context::*, BResult, CarolinaPlugin, PluginInfo};
 
@@ -87,7 +87,7 @@ impl Default for DirConfig {
 }
 
 pub struct GlobalContextInner<P: CarolinaPlugin> {
-    plugin_rid_map: RwLock<FxHashMap<PluginRid, P>>,
+    plugin_rid_map: RwLock<FxHashMap<PluginRid, (bool, P)>>,
     plugin_id2rid: DashMap<String, PluginRid>,
     plugin_rid2info: DashMap<PluginRid, PluginInfo>,
     event_mapper: EventMapper,
@@ -132,7 +132,12 @@ impl<P: CarolinaPlugin> GlobalContextImpl<P> {
         }
     }
 
-    pub async fn init_plugin(&self, mut plugin: P, info: PluginInfo) -> BResult<PluginRid> {
+    pub async fn init_plugin(
+        &self,
+        mut plugin: P,
+        info: PluginInfo,
+        rt: Option<Runtime>,
+    ) -> BResult<PluginRid> {
         let mut map = self.inner.plugin_rid_map.write().await;
         let mut rid: PluginRid;
         let mut rng = rand::thread_rng();
@@ -142,19 +147,32 @@ impl<P: CarolinaPlugin> GlobalContextImpl<P> {
                 break;
             }
         }
-        plugin.init(PluginContext::new(rid, self.clone())).await?;
-        self.inner
-            .event_mapper
-            .subscribe(plugin.subscribe_events().await, rid);
-        map.insert(rid, plugin);
-        self.inner.plugin_id2rid.insert(info.id.clone(), rid);
+        let id = info.id.clone();
+        self.inner.plugin_id2rid.insert(id.clone(), rid);
         self.inner.plugin_rid2info.insert(rid, info);
+        fs::create_dir_all(self.inner.dir_config.config_path.join(id.as_str())).await?;
+        fs::create_dir_all(self.inner.dir_config.data_path.join(id.as_str())).await?;
+
+        let is_rt = rt.is_some();
+        if let Err(e) = plugin.init(PluginContext::new(rid, self.clone(), rt)).await {
+            self.inner.plugin_id2rid.remove(&id);
+            self.inner.plugin_rid2info.remove(&rid);
+            return Err(e);
+        }
+        let subscribed = plugin.subscribe_events().await;
+        log::debug!("[{id}] Subscribed event: {subscribed:?}");
+        self.inner.event_mapper.subscribe(subscribed, rid);
+        map.insert(rid, (is_rt, plugin));
 
         Ok(rid)
     }
 
-    pub async fn post_init(&self, on_err: impl Fn(PluginRid, String, Box<dyn std::error::Error>)) {
-        for (rid, ele) in self.inner.plugin_rid_map.write().await.iter_mut() {
+    pub async fn post_init(
+        &self,
+        rt_make: impl Fn() -> Runtime,
+        on_err: impl Fn(PluginRid, String, Box<dyn std::error::Error>),
+    ) {
+        for (rid, (is_rt, ele)) in self.inner.plugin_rid_map.write().await.iter_mut() {
             let id = self
                 .inner
                 .plugin_rid2info
@@ -163,7 +181,14 @@ impl<P: CarolinaPlugin> GlobalContextImpl<P> {
                 .unwrap_or_else(|| "unknown".into());
 
             log::info!("post-initializing plugin: {id}({rid})");
-            if let Err(e) = ele.post_init().await {
+            if let Err(e) = ele
+                .post_init(PluginContext::new(
+                    *rid,
+                    self.clone(),
+                    if *is_rt { Some(rt_make()) } else { None },
+                ))
+                .await
+            {
                 on_err(*rid, id, e);
             }
         }
@@ -190,7 +215,7 @@ impl<P: CarolinaPlugin> GlobalContextImpl<P> {
                     continue;
                 }
             };
-            plugins.insert(rid, (info, map.remove(&rid).unwrap()));
+            plugins.insert(rid, (info, map.remove(&rid).unwrap().1));
         }
         let apps = DashMap::default();
         for ele in self.inner.shared_apps.iter() {
@@ -238,7 +263,7 @@ impl<P: CarolinaPlugin> GlobalContext for GlobalContextImpl<P> {
 
     async fn call_plugin_api(&self, src: PluginRid, call: APICall) -> APIResult {
         match self.inner.plugin_rid_map.read().await.get(&call.target) {
-            Some(plug) => plug.handle_api_call(src, call).await,
+            Some(plug) => plug.1.handle_api_call(src, call).await,
             None => Err(APIError::PluginNotFound(call.target)),
         }
     }
@@ -310,18 +335,20 @@ impl<P: CarolinaPlugin> GlobalContext for GlobalContextImpl<P> {
                             .filter_plugins(&event.event.r#type, &event.event.detail_type);
                         for ele in plugins {
                             let map = inner.plugin_rid_map.read().await;
-                            if let Some(plugin) = map.get(&ele) {
-                                let handle_res = plugin
-                                    .handle_event(
-                                        event.clone(),
-                                        EventContext::new(app_id, OBApp::clone_app(&app)),
-                                    )
-                                    .await;
-                                if let Err(e) = handle_res {
-                                    log::error!("plugin handle error({ele}): {e}");
-                                }
-                            } else {
+                            let Some(plugin) = map.get(&ele) else {
                                 log::error!("unexpected error, plugin not found({ele})");
+                                continue;
+                            };
+
+                            let handle_res = plugin
+                                .1
+                                .handle_event(
+                                    event.clone(),
+                                    EventContext::new(app_id, OBApp::clone_app(&app)),
+                                )
+                                .await;
+                            if let Err(e) = handle_res {
+                                log::error!("plugin handle error({ele}): {e}");
                             }
                         }
 

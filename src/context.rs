@@ -1,4 +1,6 @@
-use std::{fmt::Display, future::Future, ops::Deref, path::PathBuf, pin::Pin};
+use std::{
+    error::Error, fmt::Display, future::Future, ops::Deref, path::PathBuf, pin::Pin, sync::Arc,
+};
 
 use onebot_connect_interface::app::{
     AppDyn, AppProviderDyn, MessageSource, MessageSourceDyn, OBApp, OBAppProvider,
@@ -258,11 +260,11 @@ impl<T: GlobalContext> GlobalContextDyn for T {
 
     fn register_connect(
         &self,
-        uid: PluginRid,
+        rid: PluginRid,
         provider: Box<dyn AppProviderDyn>,
         source: Box<dyn MessageSourceDyn>,
     ) {
-        self.register_connect(uid, provider, source)
+        self.register_connect(rid, provider, source)
     }
 
     fn get_config_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf> {
@@ -274,17 +276,29 @@ impl<T: GlobalContext> GlobalContextDyn for T {
     }
 }
 
-pub struct PluginContext<G: GlobalContext> {
-    marker: PluginRid,
-    global: G,
+pub struct Runtime {
+    pub logger: Option<(Box<dyn log::Log>, log::LevelFilter)>,
 }
+
+pub struct PluginContext<G: GlobalContext> {
+    rid: PluginRid,
+    global: G,
+    runtime: Option<Runtime>,
+}
+
+pub type SharedPContext = Arc<PluginContext<Box<dyn GlobalContextDyn>>>;
+
 impl<G: GlobalContext> PluginContext<G> {
-    pub fn new(marker: PluginRid, global: G) -> Self {
-        Self { marker, global }
+    pub fn new(marker: PluginRid, global: G, runtime: Option<Runtime>) -> Self {
+        Self {
+            rid: marker,
+            global,
+            runtime,
+        }
     }
 
     pub fn marker(&self) -> PluginRid {
-        self.marker
+        self.rid
     }
 
     pub fn get_shared_app(&self, rid: impl Into<AppRid>) -> Option<impl OBApp + 'static> {
@@ -296,11 +310,49 @@ impl<G: GlobalContext> PluginContext<G> {
         self.global.get_plugin_rid(id.as_ref())
     }
 
+    pub fn get_config_dir(&self) -> Result<PathBuf, Box<dyn Error>> {
+        self.global.get_config_dir(Some(self.rid))
+    }
+
+    pub fn register_connect(&self, provider: impl OBAppProvider, source: impl MessageSource) {
+        self.global.register_connect(self.rid, provider, source)
+    }
+
+    pub fn at_runtime(&self) -> bool {
+        self.runtime.is_some()
+    }
+
     pub(crate) fn into_dyn(self) -> PluginContext<Box<dyn GlobalContextDyn>> {
         PluginContext {
-            marker: self.marker,
+            rid: self.rid,
             global: Box::new(self.global),
+            runtime: self.runtime,
         }
+    }
+
+    /// Initializes the logger for the plugin context.
+    ///
+    /// This function attempts to set the logger from the runtime if it exists.
+    /// If the logger is successfully set, it returns `Ok(true)`. If there is no logger
+    /// available in the runtime, it returns `Ok(false)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `log::SetLoggerError` if setting the logger fails.
+    pub fn init_logger(&mut self) -> Result<bool, log::SetLoggerError> {
+        if let Some(rt) = &mut self.runtime {
+            let Some((logger, lvl)) = rt.logger.take() else {
+                return Ok(false);
+            };
+            log::set_boxed_logger(logger)?;
+            log::set_max_level(lvl);
+        }
+
+        Ok(true)
+    }
+
+    pub fn into_shared(self) -> SharedPContext {
+        Arc::new(self.into_dyn())
     }
 
     pub async fn call_api<C, E>(&self, call: C) -> Result<Vec<u8>, APIError>
@@ -309,7 +361,7 @@ impl<G: GlobalContext> PluginContext<G> {
         E: Display,
     {
         self.global
-            .call_plugin_api(self.marker, call.try_into().map_err(APIError::other)?)
+            .call_plugin_api(self.rid, call.try_into().map_err(APIError::other)?)
             .await
     }
 }

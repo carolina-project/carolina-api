@@ -4,19 +4,18 @@ use std::{
     pin::Pin,
 };
 
-use context::{
-    APICall, APIResult, DynEventContext, EventContextTrait, GlobalContext, GlobalContextDyn,
-    PluginContext, PluginRid,
-};
-use std::error::Error as ErrTrait;
 use carolina_api_macros::plugin_api;
+use std::error::Error as ErrTrait;
 
 pub mod context;
+pub use context::*;
 
 #[cfg(feature = "plugin")]
 pub mod call;
 #[cfg(feature = "framework")]
 pub mod framework;
+#[cfg(feature = "plugin")]
+pub mod plugin_wrap;
 
 pub use onebot_connect_interface as oc_interface;
 pub use onebot_connect_interface::types;
@@ -36,9 +35,9 @@ where
     pub event: E,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PluginInfoBuilder {
-    id: Option<String>,
+    id: String,
     name: Option<String>,
     version: Option<String>,
     author: Option<String>,
@@ -46,6 +45,16 @@ pub struct PluginInfoBuilder {
 }
 
 impl PluginInfoBuilder {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: None,
+            version: None,
+            author: None,
+            description: None,
+        }
+    }
+
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self
@@ -67,30 +76,72 @@ impl PluginInfoBuilder {
     }
 
     pub fn build(self) -> PluginInfo {
-        let id = self.id.unwrap_or_else(|| env!("CARGO_PKG_NAME").to_owned());
         PluginInfo {
-            name: self.name.unwrap_or_else(|| id.clone()),
-            id,
-            version: self
-                .version
-                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned()),
-            author: self
-                .author
-                .unwrap_or_else(|| env!("CARGO_PKG_AUTHORS").to_owned()),
+            name: self.name.unwrap_or_else(|| self.id.clone()),
+            id: self.id,
+            version: self.version.unwrap_or_else(|| "0.1.0".to_string()),
+            author: self.author.unwrap_or_else(|| "Unknown".to_string()),
             description: self
                 .description
-                .unwrap_or_else(|| env!("CARGO_PKG_DESCRIPTION").to_owned()),
+                .unwrap_or_else(|| "No description provided.".to_string()),
         }
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PluginInfo {
     pub id: String,
     pub name: String,
     pub version: String,
     pub author: String,
     pub description: String,
+}
+
+#[macro_export]
+/// Macro to create a `PluginInfo` instance with metadata from the Cargo package.
+///
+/// This macro can be used to generate a `PluginInfo` struct with metadata such as
+/// the package name, version, authors, and description. It can be invoked with
+/// or without a custom name for the plugin.
+///
+/// # Examples
+///
+/// ```
+/// use carolina_api::plugin_info;
+///
+/// // Using the macro without a custom name
+/// let info = plugin_info!();
+///
+/// // Using the macro with a custom name
+/// let info = plugin_info!("Custom Plugin Name");
+/// ```
+///
+/// The generated `PluginInfo` will have the following fields populated from the
+/// Cargo package metadata:
+/// - `id`: The package name
+/// - `name`: The custom name provided or the package name if not provided
+/// - `version`: The package version
+/// - `author`: The package authors
+/// - `description`: The package description
+macro_rules! plugin_info {
+    ($name:literal) => {
+        $crate::PluginInfo {
+            id: env!("CARGO_PKG_NAME").to_string(),
+            name: $name.into(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            author: env!("CARGO_PKG_AUTHORS").to_string(),
+            description: env!("CARGO_PKG_DESCRIPTION").to_string(),
+        }
+    };
+    () => {
+        $crate::PluginInfo {
+            id: env!("CARGO_PKG_NAME").to_string(),
+            name: env!("CARGO_PKG_NAME").to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            author: env!("CARGO_PKG_AUTHORS").to_string(),
+            description: env!("CARGO_PKG_DESCRIPTION").to_string(),
+        }
+    };
 }
 
 #[cfg(feature = "plugin")]
@@ -117,24 +168,24 @@ impl<T: OBEventSelector> SelectorExt for T {
     }
 }
 
+pub use plugin_wrap::DynPlugin;
+
 #[plugin_api(
     ignore(handle_event_selected),
-    dyn_t = CarolinaPluginDyn,
+    dyn_t = DynPlugin,
 )]
 mod plugin {
     use crate::context::{APICall, APIError, APIResult, PluginContext, PluginRid};
     use crate::context::{EventContextTrait, GlobalContext};
     use crate::types::ob12::event::RawEvent;
-    use crate::{PluginInfo, PluginInfoBuilder};
+    use crate::PluginInfo;
     use std::error::Error as ErrTrait;
     use std::future;
     use std::{error::Error, future::Future};
     type BResult<T> = Result<T, Box<dyn ErrTrait>>;
 
     pub trait CarolinaPlugin: Send + Sync + 'static {
-        fn info(&self) -> PluginInfo {
-            PluginInfoBuilder::default().build()
-        }
+        fn info(&self) -> PluginInfo;
 
         #[allow(unused)]
         fn init<G: GlobalContext>(
@@ -144,7 +195,11 @@ mod plugin {
             async { Ok(()) }
         }
 
-        fn post_init(&mut self) -> impl Future<Output = BResult<()>> + Send + '_ {
+        #[allow(unused)]
+        fn post_init<G: GlobalContext>(
+            &mut self,
+            context: PluginContext<G>,
+        ) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_ {
             async { Ok(()) }
         }
 
@@ -159,7 +214,7 @@ mod plugin {
             &self,
             event: RawEvent,
             context: EC,
-        ) -> impl Future<Output = BResult<()>> + Send + '_
+        ) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_
         where
             EC: EventContextTrait + Send + 'static,
         {
@@ -181,18 +236,18 @@ mod plugin {
     }
 }
 
-type PinBox<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-type PinBoxResult<'a, T> = PinBox<'a, Result<T, Box<dyn ErrTrait>>>;
-type PinBoxAPIResult<'a> = PinBox<'a, APIResult>;
+type PinBoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+type PinBoxResult<'a, T> = PinBoxFut<'a, Result<T, Box<dyn ErrTrait>>>;
+type PinBoxAPIResult<'a> = PinBoxFut<'a, APIResult>;
 
 pub trait CarolinaPluginDyn: Send + Sync + 'static {
     fn info(&self) -> PluginInfo;
 
     fn init(&mut self, context: PluginContext<Box<dyn GlobalContextDyn>>) -> PinBoxResult<()>;
 
-    fn post_init(&mut self) -> PinBoxResult<()>;
+    fn post_init(&mut self, context: PluginContext<Box<dyn GlobalContextDyn>>) -> PinBoxResult<()>;
 
-    fn subscribe_events(&self) -> PinBox<Vec<(String, Option<String>)>>;
+    fn subscribe_events(&self) -> PinBoxFut<Vec<(String, Option<String>)>>;
 
     fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()>;
 
@@ -210,11 +265,11 @@ impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
         Box::pin(self.init(context))
     }
 
-    fn post_init(&mut self) -> PinBoxResult<()> {
-        Box::pin(self.post_init())
+    fn post_init(&mut self, context: PluginContext<Box<dyn GlobalContextDyn>>) -> PinBoxResult<()> {
+        Box::pin(self.post_init(context))
     }
 
-    fn subscribe_events(&self) -> PinBox<Vec<(String, Option<String>)>> {
+    fn subscribe_events(&self) -> PinBoxFut<Vec<(String, Option<String>)>> {
         Box::pin(self.subscribe_events())
     }
 
@@ -244,8 +299,11 @@ impl CarolinaPlugin for Box<dyn CarolinaPluginDyn> {
         self.deref_mut().init(context.into_dyn())
     }
 
-    fn post_init(&mut self) -> impl Future<Output = BResult<()>> + Send + '_ {
-        self.deref_mut().post_init()
+    fn post_init<G: GlobalContext>(
+        &mut self,
+        context: PluginContext<G>,
+    ) -> impl Future<Output = Result<(), Box<dyn ErrTrait>>> + Send + '_ {
+        self.deref_mut().post_init(context.into_dyn())
     }
 
     fn subscribe_events(&self) -> impl Future<Output = Vec<(String, Option<String>)>> + Send + '_ {

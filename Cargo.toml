@@ -8,27 +8,23 @@ edition = "2021"
 
 [dependencies]
 carolina-api-macros = { path = "./carolina-api-macros" }
-onebot-connect-interface = { path = "../onebot-connect/onebot-connect-interface" }
+onebot-connect-interface = { path = "../onebot-connect/onebot-connect-interface", features = ["app_recv"]}
 uuid = "1"
 serde = "1"
 thiserror = "2"
 fxhash = "0.2"
-log = { version = "0.4", optional = true }
+log = { version = "0.4", features = ["std"] }
 rand = { version = "0.8", optional = true }
 dashmap = { version = "6", optional = true }
 bincode = { version = "1", optional = true }
-parking_lot = { version = "0.12", optional = true }
-tokio = { version = "*", default-features = false, features = ["sync", "rt", "fs"], optional = true }
+tokio = { version = "*", default-features = false, features = ["sync", "rt-multi-thread"] }
 dirs = { version = "5", optional = true }
 
 [features]
 plugin = ["bincode"]
 framework = [
-    "tokio",
+    "tokio/fs",
     "dashmap",
-    "onebot-connect-interface/app_recv",
-    "dep:parking_lot",
     "dep:rand",
-    "dep:log",
     "dep:dirs",
 ]

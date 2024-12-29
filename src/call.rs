@@ -1,93 +1,110 @@
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use fxhash::FxHashMap;
 use serde::Serialize;
 
-use crate::context::*;
+use crate::{context::*, PinBoxFut};
 
 type CallFut<'a> = Pin<Box<dyn Future<Output = APIResult> + Send + 'a>>;
-type BoxedCallFn = Box<dyn Fn(PluginRid, Vec<u8>) -> CallFut<'static>>;
 
-pub trait APICallHandler {
+pub trait APICallHandler: Send + Sync {
     fn endpoint(&self) -> Endpoint;
 
     fn handle(&self, src: PluginRid, payload: Vec<u8>) -> CallFut;
 }
 
-pub struct FnCall {
-    endpoint: Endpoint,
-    func: BoxedCallFn,
+pub trait HandlerTrait<I, R>: Send + Sync {
+    fn handle(&self, src: PluginRid, input: I) -> PinBoxFut<Result<R, APIError>>;
 }
 
-impl FnCall {
-    pub fn new<F, R>(endpoint: Endpoint, func: F) -> Self
-    where
-        F: (Fn(PluginRid, Vec<u8>) -> R) + Send + 'static,
-        R: Future<Output = APIResult> + Send + 'static,
-    {
-        let func: BoxedCallFn = Box::new(move |plugin, payload| {
-            let fut = func(plugin, payload);
-            Box::pin(fut)
-        });
-        FnCall { endpoint, func }
+impl<I, R, F, FR> HandlerTrait<I, R> for F
+where
+    F: Fn(PluginRid, I) -> FR + Send + Sync + 'static,
+    FR: Future<Output = Result<R, APIError>> + Send + 'static,
+{
+    fn handle(&self, src: PluginRid, input: I) -> PinBoxFut<Result<R, APIError>> {
+        Box::pin((self)(src, input))
     }
 }
 
-impl APICallHandler for FnCall {
+pub struct FnHandler {
+    endpoint: Endpoint,
+    handler: Box<dyn HandlerTrait<Vec<u8>, Vec<u8>>>,
+}
+
+impl FnHandler {
+    pub fn new<H>(endpoint: impl Into<Endpoint>, handler: H) -> Self
+    where
+        H: HandlerTrait<Vec<u8>, Vec<u8>> + 'static,
+    {
+        FnHandler {
+            endpoint: endpoint.into(),
+            handler: Box::new(handler),
+        }
+    }
+}
+
+impl APICallHandler for FnHandler {
     fn endpoint(&self) -> Endpoint {
         self.endpoint
     }
 
     fn handle(&self, src: PluginRid, payload: Vec<u8>) -> CallFut {
-        (self.func)(src, payload)
+        self.handler.handle(src, payload)
     }
 }
 
 #[cfg(feature = "bincode")]
 mod deser_handler {
-    use serde::de::DeserializeOwned;
+    use std::future;
 
     use super::*;
+    use serde::Deserialize;
 
-    pub struct BincodeHandler {
+    pub struct BincodeHandler<I, R>
+    where
+        I: for<'de> Deserialize<'de>,
+        R: Serialize,
+    {
         endpoint: Endpoint,
-        func: BoxedCallFn,
+        handler: Box<dyn HandlerTrait<I, R>>,
     }
 
-    impl BincodeHandler {
-        pub fn new<F, R, SR, T>(endpoint: Endpoint, func: F) -> Self
+    impl<I, R> BincodeHandler<I, R>
+    where
+        I: for<'de> Deserialize<'de>,
+        R: Serialize,
+    {
+        pub fn new<H>(endpoint: impl Into<Endpoint>, handler: H) -> Self
         where
-            T: DeserializeOwned,
-            F: (Fn(PluginRid, T) -> R) + Send + 'static,
-            SR: Serialize,
-            R: Future<Output = Result<SR, APIError>> + Send + 'static,
+            H: HandlerTrait<I, R> + 'static,
         {
-            let func: BoxedCallFn =
-                Box::new(
-                    move |plugin, payload| match bincode::deserialize(&payload) {
-                        Ok(res) => {
-                            let fut = func(plugin, res);
-                            Box::pin(async move {
-                                fut.await
-                                    .and_then(|r| bincode::serialize(&r).map_err(APIError::other))
-                            })
-                        }
-                        Err(e) => Box::pin(async move {
-                            Err(APIError::Error(format!("deserialize error: {e}")))
-                        }),
-                    },
-                );
-            BincodeHandler { endpoint, func }
+            BincodeHandler {
+                endpoint: endpoint.into(),
+                handler: Box::new(handler),
+            }
         }
     }
 
-    impl APICallHandler for BincodeHandler {
+    impl<I, R> APICallHandler for BincodeHandler<I, R>
+    where
+        I: for<'de> Deserialize<'de>,
+        R: Serialize,
+    {
         fn endpoint(&self) -> Endpoint {
             self.endpoint
         }
 
         fn handle(&self, src: PluginRid, payload: Vec<u8>) -> CallFut {
-            (self.func)(src, payload)
+            match bincode::deserialize(&payload) {
+                Ok(data) => {
+                    let fut = self.handler.handle(src, data);
+                    Box::pin(
+                        async move { bincode::serialize(&fut.await?).map_err(APIError::other) },
+                    )
+                }
+                Err(e) => Box::pin(future::ready(Err(APIError::other(e)))),
+            }
         }
     }
 }
@@ -95,14 +112,19 @@ mod deser_handler {
 #[cfg(feature = "bincode")]
 pub use deser_handler::*;
 
+type Handlers = Arc<tokio::sync::RwLock<FxHashMap<Endpoint, Box<dyn APICallHandler>>>>;
+
 #[derive(Default)]
-pub struct APISet {
-    handlers: FxHashMap<Endpoint, Box<dyn APICallHandler>>,
+pub struct APIRouter {
+    handlers: Handlers,
 }
 
-impl APISet {
-    pub fn register(&mut self, handler: impl APICallHandler + 'static) {
-        self.handlers.insert(handler.endpoint(), Box::new(handler));
+impl APIRouter {
+    pub async fn register(&mut self, handler: impl APICallHandler + 'static) {
+        self.handlers
+            .write()
+            .await
+            .insert(handler.endpoint(), Box::new(handler));
     }
 
     pub async fn handle(&self, src: PluginRid, call: APICall) -> Result<Vec<u8>, APIError> {
@@ -110,7 +132,7 @@ impl APISet {
             endpoint, payload, ..
         } = call;
 
-        if let Some(handler) = self.handlers.get(&endpoint) {
+        if let Some(handler) = self.handlers.read().await.get(&endpoint) {
             let result = handler.handle(src, payload).await?;
             Ok(result)
         } else {
@@ -118,7 +140,7 @@ impl APISet {
         }
     }
 
-    pub fn is_registered(&self, endpoint: Endpoint) -> bool {
-        self.handlers.contains_key(&endpoint)
+    pub async fn is_registered(&self, endpoint: Endpoint) -> bool {
+        self.handlers.read().await.contains_key(&endpoint)
     }
 }

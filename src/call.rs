@@ -112,10 +112,10 @@ mod deser_handler {
         fn endpoint(&self) -> Endpoint;
     }
 
-    impl<T: BincodeAPICall> TryInto<APICall> for T {
+    impl<T: BincodeAPICall> IntoAPICall for T {
         type Error = bincode::Error;
 
-        fn try_into(self) -> Result<APICall, Self::Error> {
+        fn into_api_call(self) -> Result<APICall, Self::Error> {
             Ok(APICall {
                 endpoint: self.endpoint(),
                 payload: bincode::serialize(&self)?,

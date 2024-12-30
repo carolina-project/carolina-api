@@ -11,7 +11,7 @@ use crate::BResult;
 macro_rules! wrap {
     ($name:ident, $ty:ty $(, $doc:literal)?) => {
         $(#[doc = $doc])?
-        #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+        #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, serde::Serialize, serde::Deserialize)]
         pub struct $name($ty);
 
         impl $name {

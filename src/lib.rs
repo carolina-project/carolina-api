@@ -172,7 +172,6 @@ impl<T: OBEventSelector> SelectorExt for T {
 
 
 #[plugin_api(
-    ignore(handle_event_selected),
     dyn_t = CarolinaPluginDyn,
     dyn_wrap = DynPlugin,
 )]

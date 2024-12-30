@@ -101,6 +101,7 @@ pub(crate) mod api {
     fn make_macro(
         trait_data: &ItemTrait,
         dyn_ty: Option<Path>,
+        dyn_wrap_ty: Option<Path>,
         inner_tt: &TokenStream,
     ) -> syn::Result<proc_macro2::TokenStream> {
         let trait_name = &trait_data.ident;
@@ -114,7 +115,7 @@ pub(crate) mod api {
         });
 
         let dyn_ty = dyn_ty.unwrap_or_else(|| trait_name.clone().into());
-        let dyn_ty_plugin = quote! { $crate::#dyn_ty };
+        let dyn_ty_macro = quote! { $crate::#dyn_ty };
 
         let call_site = Span::call_site();
         let cmptime_fn_ident = Ident::new(&format!("__make_cmptime_{name_snake}"), call_site);
@@ -122,6 +123,11 @@ pub(crate) mod api {
             &format!("__{EXPORT_FN_HASH}_make_dyn_{name_snake}"),
             call_site,
         );
+        let dyn_wrap_tokens = match dyn_wrap_ty {
+            Some(ty) => quote! { #ty::new(<$plug as Default>::default()) },
+            None => quote! { <$plug as Default>::default() },
+        };
+
         let export_plug_macro = quote! {
             /// Export plugin struct.
             #[macro_export]
@@ -134,8 +140,8 @@ pub(crate) mod api {
 
                     #[doc(hidden)]
                     #[no_mangle]
-                    pub extern "Rust" fn #dyn_fn_ident() -> #dyn_ty_plugin {
-                        #dyn_ty_plugin::new(<$plug as Default>::default())
+                    pub extern "Rust" fn #dyn_fn_ident() -> Box<dyn #dyn_ty_macro> {
+                        Box::new(#dyn_wrap_tokens)
                     }
 
                     #[doc(hidden)]
@@ -154,7 +160,7 @@ pub(crate) mod api {
             /// Static name for the dynamic plugin loader function.
             pub static DYN_LOADER_FN_NAME: &'static [u8] = #static_name_dyn;
             /// Dynamic plugin loader entry.
-            pub type DynPluginLoader = extern "Rust" fn() -> #dyn_ty;
+            pub type DynPluginLoader = extern "Rust" fn() -> Box<dyn #dyn_ty>;
 
             pub use carolina_api_macros::__generate_enum;
 
@@ -167,7 +173,7 @@ pub(crate) mod api {
                     #[doc(hidden)]
                     mod __plugin_dispatcher {
                         use super::*;
-                        use #dyn_ty_plugin as DynTy;
+                        use #dyn_ty_macro as DynTy;
                         use $crate::#trait_name as Trait;
                         #inner_tt
 
@@ -297,7 +303,7 @@ pub(crate) mod api {
         let expanded = quote! {
              #vis enum #name {
                 #(#var_names(::#items::__ExportedPlugin),)*
-                DynPlugin(#dyn_ty),
+                DynPlugin(Box<dyn #dyn_ty>),
             }
 
             #(
@@ -308,8 +314,8 @@ pub(crate) mod api {
                 }
             )*
 
-            impl From<#dyn_ty> for #name {
-                fn from(plug: #dyn_ty) -> Self {
+            impl From<Box<dyn #dyn_ty>> for #name {
+                fn from(plug: Box<dyn #dyn_ty>) -> Self {
                     Self::DynPlugin(plug)
                 }
             }
@@ -333,6 +339,7 @@ pub(crate) mod api {
         let mut ignored = HashSet::<Ident>::new();
 
         let mut dyn_ty = None::<Path>;
+        let mut dyn_wrap = None::<Path>;
         for ele in attrs {
             match ele {
                 Meta::List(meta) => {
@@ -353,6 +360,11 @@ pub(crate) mod api {
                             return Err(syn::Error::new_spanned(meta.value, "expected path"));
                         };
                         dyn_ty = Some(ty.path);
+                    } else if meta.path.is_ident("dyn_wrap") {
+                        let Expr::Path(ty) = meta.value else {
+                            return Err(syn::Error::new_spanned(meta.value, "expected path"));
+                        };
+                        dyn_wrap = Some(ty.path);
                     } else {
                         return Err(syn::Error::new_spanned(meta, "unknown attribute"));
                     }
@@ -361,7 +373,7 @@ pub(crate) mod api {
             }
         }
 
-        let macros = make_macro(&trait_, dyn_ty, &tt)?;
+        let macros = make_macro(&trait_, dyn_ty, dyn_wrap, &tt)?;
 
         Ok(quote! {
             #input

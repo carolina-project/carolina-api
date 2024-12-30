@@ -3,36 +3,41 @@ use tokio::runtime as tok_rt;
 
 use std::{cell::UnsafeCell, error::Error as ErrTrait, fmt::Display, sync::Arc};
 
-#[derive(Clone)]
-struct UnsafePlugin(Arc<UnsafeCell<dyn CarolinaPluginDyn>>);
-unsafe impl Sync for UnsafePlugin {}
-unsafe impl Send for UnsafePlugin {}
+struct UnsafePlugin<P: CarolinaPluginDyn>(Arc<UnsafeCell<P>>);
+unsafe impl<P: CarolinaPluginDyn> Sync for UnsafePlugin<P> {}
+unsafe impl<P: CarolinaPluginDyn> Send for UnsafePlugin<P> {}
 
-impl Deref for UnsafePlugin {
-    type Target = dyn CarolinaPluginDyn;
+impl<P: CarolinaPluginDyn> Clone for UnsafePlugin<P> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<P: CarolinaPluginDyn> Deref for UnsafePlugin<P> {
+    type Target = P;
 
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.0.get() }
     }
 }
-impl DerefMut for UnsafePlugin {
+impl<P: CarolinaPluginDyn> DerefMut for UnsafePlugin<P> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *self.0.get() }
     }
 }
-impl UnsafePlugin {
-    fn new<P: CarolinaPlugin>(plug: P) -> Self {
+impl<P: CarolinaPluginDyn> UnsafePlugin<P> {
+    fn new(plug: P) -> Self {
         Self(Arc::new(UnsafeCell::new(plug)))
     }
 }
 
-pub struct DynPlugin {
-    plugin: UnsafePlugin,
+pub struct DynPlugin<P: CarolinaPlugin> {
+    plugin: UnsafePlugin<P>,
     async_rt: tok_rt::Runtime,
 }
 
-impl DynPlugin {
-    pub fn new<P: CarolinaPlugin>(plug: P) -> Self {
+impl<P: CarolinaPlugin> DynPlugin<P> {
+    pub fn new(plug: P) -> Self {
         Self {
             plugin: UnsafePlugin::new(plug),
             async_rt: tok_rt::Builder::new_multi_thread()
@@ -58,7 +63,7 @@ impl Display for StringError {
 }
 impl ErrTrait for StringError {}
 
-impl CarolinaPlugin for DynPlugin {
+impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
     fn info(&self) -> PluginInfo {
         let _guard = self.async_rt.enter();
         self.plugin.info()
@@ -72,15 +77,8 @@ impl CarolinaPlugin for DynPlugin {
         let mut plugin = self.plugin.clone();
         async move {
             self.async_rt
-                .spawn(async move {
-                    println!("init other");
-                    plugin
-                        .init(context.into_dyn())
-                        .await
-                        .map_err(StringError::boxed)
-                })
-                .await
-                .unwrap()
+                .spawn(async move { plugin.init(context).await.map_err(StringError::boxed) })
+                .await?
                 .map_err(|e| e as _)
         }
     }
@@ -93,14 +91,8 @@ impl CarolinaPlugin for DynPlugin {
         let mut plugin = self.plugin.clone();
         async move {
             self.async_rt
-                .spawn(async move {
-                    plugin
-                        .post_init(context.into_dyn())
-                        .await
-                        .map_err(StringError::boxed)
-                })
-                .await
-                .unwrap()
+                .spawn(async move { plugin.post_init(context).await.map_err(StringError::boxed) })
+                .await?
                 .map_err(|e| e as _)
         }
     }
@@ -124,12 +116,11 @@ impl CarolinaPlugin for DynPlugin {
             self.async_rt
                 .spawn(async move {
                     plugin
-                        .handle_event(event, DynEventContext::from(context.into_inner()))
+                        .handle_event(event, context)
                         .await
                         .map_err(StringError::boxed)
                 })
-                .await
-                .unwrap()
+                .await?
                 .map_err(|e| e as _)
         }
     }
@@ -140,12 +131,12 @@ impl CarolinaPlugin for DynPlugin {
         src: PluginRid,
         call: APICall,
     ) -> impl Future<Output = APIResult> + Send + '_ {
-        let mut plugin = self.plugin.clone();
+        let plugin = self.plugin.clone();
         async move {
             self.async_rt
                 .spawn(async move { plugin.handle_api_call(src, call).await })
                 .await
-                .unwrap()
+                .map_err(APIError::other)?
         }
     }
 
@@ -156,8 +147,7 @@ impl CarolinaPlugin for DynPlugin {
         async move {
             self.async_rt
                 .spawn(async move { plugin.deinit().await.map_err(StringError::boxed) })
-                .await
-                .unwrap()
+                .await?
                 .map_err(|e| e as _)
         }
     }

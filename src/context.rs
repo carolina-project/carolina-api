@@ -51,9 +51,14 @@ wrap!(Endpoint, u64);
 
 #[derive(Debug, Clone)]
 pub struct APICall {
-    pub target: PluginRid,
     pub endpoint: Endpoint,
     pub payload: Vec<u8>,
+}
+
+pub trait IntoAPICall {
+    type Error: Error;
+
+    fn into_api_call(self) -> Result<APICall, Self::Error>;
 }
 
 pub type APIResult = Result<Vec<u8>, APIError>;
@@ -156,6 +161,7 @@ pub trait GlobalContext: Send + Sync + 'static {
     fn call_plugin_api(
         &self,
         src: PluginRid,
+        target: PluginRid,
         call: APICall,
     ) -> impl Future<Output = APIResult> + Send + '_;
 
@@ -181,6 +187,7 @@ pub trait GlobalContextDyn: Send + Sync + 'static {
     fn call_plugin_api(
         &self,
         src: PluginRid,
+        target: PluginRid,
         call: APICall,
     ) -> Pin<Box<dyn Future<Output = APIResult> + Send + '_>>;
 
@@ -213,9 +220,10 @@ impl GlobalContext for Box<dyn GlobalContextDyn> {
     fn call_plugin_api(
         &self,
         src: PluginRid,
+        target: PluginRid,
         call: APICall,
     ) -> impl Future<Output = APIResult> + Send + '_ {
-        self.deref().call_plugin_api(src, call)
+        self.deref().call_plugin_api(src, target, call)
     }
 
     fn register_connect(
@@ -253,9 +261,10 @@ impl<T: GlobalContext> GlobalContextDyn for T {
     fn call_plugin_api(
         &self,
         src: PluginRid,
+        target: PluginRid,
         call: APICall,
     ) -> Pin<Box<dyn Future<Output = APIResult> + Send + '_>> {
-        Box::pin(self.call_plugin_api(src, call))
+        Box::pin(self.call_plugin_api(src, target, call))
     }
 
     fn register_connect(
@@ -355,13 +364,17 @@ impl<G: GlobalContext> PluginContext<G> {
         Arc::new(self.into_dyn())
     }
 
-    pub async fn call_api<C, E>(&self, call: C) -> Result<Vec<u8>, APIError>
+    pub async fn call_api<C, E>(&self, target: PluginRid, call: C) -> Result<Vec<u8>, APIError>
     where
-        C: TryInto<APICall, Error = E>,
+        C: IntoAPICall<Error = E>,
         E: Display,
     {
         self.global
-            .call_plugin_api(self.rid, call.try_into().map_err(APIError::other)?)
+            .call_plugin_api(
+                self.rid,
+                target,
+                call.into_api_call().map_err(APIError::other)?,
+            )
             .await
     }
 }

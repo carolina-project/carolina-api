@@ -107,6 +107,21 @@ mod deser_handler {
             }
         }
     }
+
+    pub trait BincodeAPICall: serde::Serialize {
+        fn endpoint(&self) -> Endpoint;
+    }
+
+    impl<T: BincodeAPICall> TryInto<APICall> for T {
+        type Error = bincode::Error;
+
+        fn try_into(self) -> Result<APICall, Self::Error> {
+            Ok(APICall {
+                endpoint: self.endpoint(),
+                payload: bincode::serialize(&self)?,
+            })
+        }
+    }
 }
 
 #[cfg(feature = "bincode")]

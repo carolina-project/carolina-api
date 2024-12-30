@@ -50,20 +50,20 @@ impl EventMapper {
 }
 
 pub struct DirConfig {
-    config_path: PathBuf,
-    data_path: PathBuf,
+    pub config_path: PathBuf,
+    pub data_path: PathBuf,
 }
 impl DirConfig {
     pub fn new(config: Option<PathBuf>, data: Option<PathBuf>) -> Self {
         let config_path = config.unwrap_or_else(|| {
             dirs::config_dir()
                 .unwrap_or_else(|| PathBuf::from_str(".").unwrap())
-                .join("config")
+                .join("carolina")
         });
         let data_path = data.unwrap_or_else(|| {
             dirs::data_dir()
                 .unwrap_or_else(|| PathBuf::from_str(".").unwrap())
-                .join("data")
+                .join("carolina")
         });
 
         DirConfig {
@@ -261,10 +261,10 @@ impl<P: CarolinaPlugin> GlobalContext for GlobalContextImpl<P> {
             .map(|r| r.id.clone())
     }
 
-    async fn call_plugin_api(&self, src: PluginRid, call: APICall) -> APIResult {
-        match self.inner.plugin_rid_map.read().await.get(&call.target) {
+    async fn call_plugin_api(&self, src: PluginRid, target: PluginRid, call: APICall) -> APIResult {
+        match self.inner.plugin_rid_map.read().await.get(&target) {
             Some(plug) => plug.1.handle_api_call(src, call).await,
-            None => Err(APIError::PluginNotFound(call.target)),
+            None => Err(APIError::PluginNotFound(target)),
         }
     }
 

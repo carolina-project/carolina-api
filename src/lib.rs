@@ -10,12 +10,14 @@ use std::error::Error as ErrTrait;
 pub mod context;
 pub use context::*;
 
-#[cfg(feature = "plugin")]
-pub mod call;
 #[cfg(feature = "framework")]
 pub mod framework;
 #[cfg(feature = "plugin")]
 pub mod plugin_wrap;
+#[cfg(feature = "plugin")]
+pub use plugin_wrap::DynPlugin;
+#[cfg(feature = "plugin")]
+pub mod call;
 
 pub use onebot_connect_interface as oc_interface;
 pub use onebot_connect_interface::types;
@@ -168,11 +170,11 @@ impl<T: OBEventSelector> SelectorExt for T {
     }
 }
 
-pub use plugin_wrap::DynPlugin;
 
 #[plugin_api(
     ignore(handle_event_selected),
-    dyn_t = DynPlugin,
+    dyn_t = CarolinaPluginDyn,
+    dyn_wrap = DynPlugin,
 )]
 mod plugin {
     use crate::context::{APICall, APIError, APIResult, PluginContext, PluginRid};

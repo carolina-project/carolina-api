@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::{context::*, PinBoxFut};
 
-type CallFut<'a> = Pin<Box<dyn Future<Output = APIResult> + Send + 'a>>;
+pub type CallFut<'a> = Pin<Box<dyn Future<Output = APIResult> + Send + 'a>>;
 
 pub trait APICallHandler: Send + Sync {
     fn endpoint(&self) -> Endpoint;
@@ -109,7 +109,20 @@ mod deser_handler {
     }
 
     pub trait BincodeAPICall: serde::Serialize {
+        type Output: for<'de> Deserialize<'de>;
+
         fn endpoint(&self) -> Endpoint;
+    }
+
+    impl<G: GlobalContext> PluginContext<G> {
+        pub async fn call_bincode_api<C: BincodeAPICall>(
+            &self,
+            target: PluginRid,
+            call: C,
+        ) -> Result<C::Output, APIError> {
+            let resp = self.call_api(target, call).await?;
+            bincode::deserialize(&resp).map_err(APIError::other)
+        }
     }
 
     impl<T: BincodeAPICall> IntoAPICall for T {
@@ -134,12 +147,28 @@ pub struct APIRouter {
     handlers: Handlers,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RegError {
+    #[error("already registered, {0:?}")]
+    Conflicted(Endpoint),
+}
+
 impl APIRouter {
-    pub async fn register(&mut self, handler: impl APICallHandler + 'static) {
-        self.handlers
-            .write()
-            .await
-            .insert(handler.endpoint(), Box::new(handler));
+    pub async fn register(
+        &mut self,
+        handler: impl APICallHandler + 'static,
+    ) -> Result<(), RegError> {
+        let handlers = self.handlers.write().await;
+        let endpoint = handler.endpoint();
+        if handlers.contains_key(&endpoint) {
+            Err(RegError::Conflicted(endpoint))
+        } else {
+            self.handlers
+                .write()
+                .await
+                .insert(handler.endpoint(), Box::new(handler));
+            Ok(())
+        }
     }
 
     pub async fn handle(&self, src: PluginRid, call: APICall) -> Result<Vec<u8>, APIError> {

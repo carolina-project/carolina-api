@@ -16,7 +16,7 @@ macro_rules! wrap {
 
         impl $name {
             #[inline]
-            pub fn new(id: $ty) -> Self {
+            pub const fn new(id: $ty) -> Self {
                 Self(id)
             }
 

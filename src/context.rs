@@ -165,12 +165,10 @@ pub trait GlobalContext: Send + Sync {
         call: APICall,
     ) -> impl Future<Output = APIResult> + Send + '_;
 
-    fn register_connect(
-        &self,
-        rid: PluginRid,
-        provider: impl OBAppProvider,
-        source: impl MessageSource,
-    );
+    fn register_connect<P, S>(&self, rid: PluginRid, provider: P, source: S)
+    where
+        P: OBAppProvider<Output: 'static> + 'static,
+        S: MessageSource + 'static;
 
     fn get_config_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf>;
 
@@ -193,7 +191,7 @@ pub trait GlobalContextDyn: Send + Sync {
 
     fn register_connect(
         &self,
-        uid: PluginRid,
+        rid: PluginRid,
         provider: Box<dyn AppProviderDyn>,
         source: Box<dyn MessageSourceDyn>,
     );
@@ -226,14 +224,13 @@ impl<'a> GlobalContext for Box<dyn GlobalContextDyn + 'a> {
         self.deref().call_plugin_api(src, target, call)
     }
 
-    fn register_connect(
-        &self,
-        rid: PluginRid,
-        provider: impl OBAppProvider + 'static,
-        source: impl MessageSource + 'static,
-    ) {
+    fn register_connect<P, S>(&self, rid: PluginRid, provider: P, source: S)
+    where
+        P: OBAppProvider<Output: 'static> + 'static,
+        S: MessageSource + 'static,
+    {
         self.deref()
-            .register_connect(rid, Box::new(provider), Box::new(source))
+            .register_connect(rid, Box::new(provider), Box::new(source));
     }
 
     fn get_config_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf> {
@@ -323,7 +320,11 @@ impl<G: GlobalContext> PluginContext<G> {
         self.global.get_config_dir(Some(self.rid))
     }
 
-    pub fn register_connect(&self, provider: impl OBAppProvider, source: impl MessageSource) {
+    pub fn register_connect(
+        &self,
+        provider: impl OBAppProvider + 'static,
+        source: impl MessageSource + 'static,
+    ) {
         self.global.register_connect(self.rid, provider, source)
     }
 

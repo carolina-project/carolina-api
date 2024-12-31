@@ -245,7 +245,7 @@ fn rand_u64<K: Into<u64> + From<u64> + Hash + Eq + Clone, V>(map: &DashMap<K, V>
     }
 }
 
-impl<P: CarolinaPlugin + 'static> GlobalContext for GlobalContextImpl<P> {
+impl<PL: CarolinaPlugin + 'static> GlobalContext for GlobalContextImpl<PL> {
     fn get_shared_app(&self, id: AppRid) -> Option<Box<dyn AppDyn>> {
         self.inner.shared_apps.get(&id).map(|r| r.clone_app())
     }
@@ -296,12 +296,11 @@ impl<P: CarolinaPlugin + 'static> GlobalContext for GlobalContextImpl<P> {
         }
     }
 
-    fn register_connect(
-        &self,
-        plugin_rid: PluginRid,
-        mut provider: impl OBAppProvider,
-        mut source: impl MessageSource,
-    ) {
+    fn register_connect<P, S>(&self, plugin_rid: PluginRid, mut provider: P, mut source: S)
+    where
+        P: OBAppProvider<Output: 'static> + 'static,
+        S: MessageSource + 'static,
+    {
         let app_id = rand_u64(&self.inner.shared_apps);
         if !provider.use_event_context() {
             match provider.provide() {

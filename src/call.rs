@@ -17,13 +17,14 @@ pub trait HandlerTrait<I, R>: Send + Sync {
     fn handle(&self, src: PluginRid, input: I) -> PinBoxFut<Result<R, APIError>>;
 }
 
-impl<I, R, F, FR> HandlerTrait<I, R> for F
+impl<'a, I, R, F, FR> HandlerTrait<I, R> for F
 where
-    F: Fn(PluginRid, I) -> FR + Send + Sync + 'static,
-    FR: Future<Output = Result<R, APIError>> + Send + 'static,
+    F: Fn(PluginRid, I) -> FR + Send + Sync + 'a,
+    FR: Future<Output = Result<R, APIError>> + Send + 'a,
+    I: Send + 'static,
 {
     fn handle(&self, src: PluginRid, input: I) -> PinBoxFut<Result<R, APIError>> {
-        Box::pin((self)(src, input))
+        Box::pin(async move { (self)(src, input).await })
     }
 }
 

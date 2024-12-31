@@ -151,7 +151,7 @@ impl APIError {
     }
 }
 
-pub trait GlobalContext: Send + Sync + 'static {
+pub trait GlobalContext: Send + Sync {
     fn get_shared_app(&self, id: AppRid) -> Option<Box<dyn AppDyn>>;
 
     fn get_plugin_rid(&self, id: &str) -> Option<PluginRid>;
@@ -177,7 +177,7 @@ pub trait GlobalContext: Send + Sync + 'static {
     fn get_data_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf>;
 }
 
-pub trait GlobalContextDyn: Send + Sync + 'static {
+pub trait GlobalContextDyn: Send + Sync {
     fn get_shared_app(&self, id: AppRid) -> Option<Box<dyn AppDyn>>;
 
     fn get_plugin_rid(&self, id: &str) -> Option<PluginRid>;
@@ -204,7 +204,7 @@ pub trait GlobalContextDyn: Send + Sync + 'static {
 }
 
 // For parameter passing
-impl GlobalContext for Box<dyn GlobalContextDyn> {
+impl<'a> GlobalContext for Box<dyn GlobalContextDyn + 'a> {
     fn get_shared_app(&self, id: AppRid) -> Option<Box<dyn AppDyn>> {
         self.deref().get_shared_app(id)
     }
@@ -229,8 +229,8 @@ impl GlobalContext for Box<dyn GlobalContextDyn> {
     fn register_connect(
         &self,
         rid: PluginRid,
-        provider: impl OBAppProvider,
-        source: impl MessageSource,
+        provider: impl OBAppProvider + 'static,
+        source: impl MessageSource + 'static,
     ) {
         self.deref()
             .register_connect(rid, Box::new(provider), Box::new(source))
@@ -289,7 +289,7 @@ pub struct Runtime {
     pub logger: Option<(Box<dyn log::Log>, log::LevelFilter)>,
 }
 
-pub struct PluginContext<G: GlobalContext> {
+pub struct PluginContext<G: GlobalContext + 'static> {
     rid: PluginRid,
     global: G,
     runtime: Option<Runtime>,

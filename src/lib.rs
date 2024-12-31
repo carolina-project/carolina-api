@@ -185,7 +185,7 @@ mod plugin {
     use std::{error::Error, future::Future};
     type BResult<T> = Result<T, Box<dyn ErrTrait>>;
 
-    pub trait CarolinaPlugin: Send + Sync + 'static {
+    pub trait CarolinaPlugin: Send + Sync {
         fn info(&self) -> PluginInfo;
 
         #[allow(unused)]
@@ -257,7 +257,7 @@ pub trait CarolinaPluginDyn: Send + Sync + 'static {
     fn deinit(&mut self) -> PinBoxResult<()>;
 }
 
-impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
+impl<T: CarolinaPlugin + 'static> CarolinaPluginDyn for T {
     fn info(&self) -> PluginInfo {
         self.info()
     }
@@ -288,7 +288,7 @@ impl<T: CarolinaPlugin> CarolinaPluginDyn for T {
 }
 
 // For dynamic dispatching
-impl CarolinaPlugin for Box<dyn CarolinaPluginDyn> {
+impl<'a> CarolinaPlugin for Box<dyn CarolinaPluginDyn + 'a> {
     fn info(&self) -> PluginInfo {
         self.deref().info()
     }

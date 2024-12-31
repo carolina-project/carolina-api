@@ -3,7 +3,7 @@ use tokio::runtime as tok_rt;
 
 use std::{cell::UnsafeCell, error::Error as ErrTrait, fmt::Display, sync::Arc};
 
-struct UnsafePlugin<P: CarolinaPluginDyn>(Arc<UnsafeCell<P>>);
+struct UnsafePlugin<P: CarolinaPluginDyn + 'static>(Arc<UnsafeCell<P>>);
 unsafe impl<P: CarolinaPluginDyn> Sync for UnsafePlugin<P> {}
 unsafe impl<P: CarolinaPluginDyn> Send for UnsafePlugin<P> {}
 
@@ -31,7 +31,7 @@ impl<P: CarolinaPluginDyn> UnsafePlugin<P> {
     }
 }
 
-pub struct DynPlugin<P: CarolinaPlugin> {
+pub struct DynPlugin<P: CarolinaPlugin + 'static> {
     plugin: UnsafePlugin<P>,
     async_rt: tok_rt::Runtime,
 }

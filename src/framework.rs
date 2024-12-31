@@ -113,7 +113,7 @@ pub struct GlobalDestructed<P: CarolinaPlugin> {
     pub shared_apps: DashMap<AppRid, Box<dyn AppDyn + Sync>>,
 }
 
-impl<P: CarolinaPlugin> GlobalContextImpl<P> {
+impl<P: CarolinaPlugin + 'static> GlobalContextImpl<P> {
     pub fn new(dir_config: DirConfig) -> Self {
         fn default<T: Default>() -> T {
             T::default()
@@ -245,7 +245,7 @@ fn rand_u64<K: Into<u64> + From<u64> + Hash + Eq + Clone, V>(map: &DashMap<K, V>
     }
 }
 
-impl<P: CarolinaPlugin> GlobalContext for GlobalContextImpl<P> {
+impl<P: CarolinaPlugin + 'static> GlobalContext for GlobalContextImpl<P> {
     fn get_shared_app(&self, id: AppRid) -> Option<Box<dyn AppDyn>> {
         self.inner.shared_apps.get(&id).map(|r| r.clone_app())
     }

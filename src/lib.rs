@@ -7,17 +7,13 @@ use std::{
 use carolina_api_macros::plugin_api;
 use std::error::Error as ErrTrait;
 
-pub mod context;
-pub use context::*;
-
+pub mod common;
 #[cfg(feature = "framework")]
 pub mod framework;
 #[cfg(feature = "plugin")]
-pub mod plugin_wrap;
-#[cfg(feature = "plugin")]
-pub use plugin_wrap::DynPlugin;
-#[cfg(feature = "plugin")]
-pub mod call;
+pub mod plugin;
+
+pub use common::*;
 
 pub use onebot_connect_interface as oc_interface;
 pub use onebot_connect_interface::types;
@@ -170,14 +166,13 @@ impl<T: OBEventSelector> SelectorExt for T {
     }
 }
 
-
 #[plugin_api(
     dyn_t = CarolinaPluginDyn,
     dyn_wrap = DynPlugin,
 )]
-mod plugin {
-    use crate::context::{APICall, APIError, APIResult, PluginContext, PluginRid};
-    use crate::context::{EventContextTrait, GlobalContext};
+mod caro_plugin {
+    use crate::{APICall, APIError, APIResult, PluginContext, PluginRid};
+    use crate::{EventContextTrait, GlobalContext};
     use crate::types::ob12::event::RawEvent;
     use crate::PluginInfo;
     use std::error::Error as ErrTrait;
@@ -205,7 +200,7 @@ mod plugin {
         }
 
         fn subscribe_events(
-            &self,
+            &mut self,
         ) -> impl Future<Output = Vec<(String, Option<String>)>> + Send + '_ {
             future::ready(vec![])
         }
@@ -231,7 +226,10 @@ mod plugin {
             future::ready(Err(APIError::EndpointNotFound(call.endpoint)))
         }
 
-        fn deinit(&mut self) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_ {
+        fn deinit(self) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send
+        where
+            Self: Sized,
+        {
             async { Ok(()) }
         }
     }
@@ -248,13 +246,13 @@ pub trait CarolinaPluginDyn: Send + Sync + 'static {
 
     fn post_init(&mut self, context: PluginContext<Box<dyn GlobalContextDyn>>) -> PinBoxResult<()>;
 
-    fn subscribe_events(&self) -> PinBoxFut<Vec<(String, Option<String>)>>;
+    fn subscribe_events(&mut self) -> PinBoxFut<Vec<(String, Option<String>)>>;
 
     fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()>;
 
     fn handle_api_call(&self, src: PluginRid, call: APICall) -> PinBoxAPIResult;
 
-    fn deinit(&mut self) -> PinBoxResult<()>;
+    fn deinit(self) -> PinBoxResult<'static, ()>;
 }
 
 impl<T: CarolinaPlugin + 'static> CarolinaPluginDyn for T {
@@ -270,7 +268,7 @@ impl<T: CarolinaPlugin + 'static> CarolinaPluginDyn for T {
         Box::pin(self.post_init(context))
     }
 
-    fn subscribe_events(&self) -> PinBoxFut<Vec<(String, Option<String>)>> {
+    fn subscribe_events(&mut self) -> PinBoxFut<Vec<(String, Option<String>)>> {
         Box::pin(self.subscribe_events())
     }
 
@@ -282,7 +280,7 @@ impl<T: CarolinaPlugin + 'static> CarolinaPluginDyn for T {
         Box::pin(self.handle_api_call(src, call))
     }
 
-    fn deinit(&mut self) -> PinBoxResult<()> {
+    fn deinit(self) -> PinBoxResult<'static, ()> {
         Box::pin(self.deinit())
     }
 }
@@ -307,8 +305,10 @@ impl<'a> CarolinaPlugin for Box<dyn CarolinaPluginDyn + 'a> {
         self.deref_mut().post_init(context.into_dyn())
     }
 
-    fn subscribe_events(&self) -> impl Future<Output = Vec<(String, Option<String>)>> + Send + '_ {
-        self.deref().subscribe_events()
+    fn subscribe_events(
+        &mut self,
+    ) -> impl Future<Output = Vec<(String, Option<String>)>> + Send + '_ {
+        self.deref_mut().subscribe_events()
     }
 
     fn handle_api_call(
@@ -319,8 +319,8 @@ impl<'a> CarolinaPlugin for Box<dyn CarolinaPluginDyn + 'a> {
         self.deref().handle_api_call(src, call)
     }
 
-    fn deinit(&mut self) -> impl Future<Output = BResult<()>> + Send + '_ {
-        self.deref_mut().deinit()
+    fn deinit(self) -> impl Future<Output = BResult<()>> + Send {
+        CarolinaPluginDyn::deinit(self)
     }
 
     fn handle_event<EC>(

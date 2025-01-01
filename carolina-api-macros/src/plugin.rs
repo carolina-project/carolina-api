@@ -138,6 +138,7 @@ pub(crate) mod api {
                         <$plug as Default>::default()
                     }
 
+                    #[cfg(feature = "dyplugin")]
                     #[doc(hidden)]
                     #[no_mangle]
                     pub extern "Rust" fn #dyn_fn_ident() -> Box<dyn #dyn_ty_macro> {

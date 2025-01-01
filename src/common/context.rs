@@ -1,67 +1,12 @@
-use std::{
-    error::Error, fmt::Display, future::Future, ops::Deref, path::PathBuf, pin::Pin, sync::Arc,
-};
-
-use onebot_connect_interface::app::{
-    AppDyn, AppProviderDyn, MessageSource, MessageSourceDyn, OBApp, OBAppProvider,
-};
+use std::{future::Future, ops::Deref, path::PathBuf, pin::Pin, sync::Arc};
 
 use crate::BResult;
 
-macro_rules! wrap {
-    ($name:ident, $ty:ty $(, $doc:literal)?) => {
-        $(#[doc = $doc])?
-        #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, serde::Serialize, serde::Deserialize)]
-        pub struct $name($ty);
-
-        impl $name {
-            #[inline]
-            pub const fn new(id: $ty) -> Self {
-                Self(id)
-            }
-
-            #[inline]
-            pub fn inner(&self) -> $ty {
-                self.0
-            }
-        }
-        impl From<$name> for $ty {
-            #[inline]
-            fn from(val: $name) -> Self {
-                val.0
-            }
-        }
-        impl From<$ty> for $name {
-            #[inline]
-            fn from(id: $ty) -> Self {
-                Self(id)
-            }
-        }
-        impl Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, concat!(stringify!($name), "({})"), self.0)
-            }
-        }
-    };
-}
-
-wrap!(AppRid, u64, "OneBot application side's runtime id.");
-wrap!(PluginRid, u64, "Plugin's runtime id.");
-wrap!(Endpoint, u64);
-
-#[derive(Debug, Clone)]
-pub struct APICall {
-    pub endpoint: Endpoint,
-    pub payload: Vec<u8>,
-}
-
-pub trait IntoAPICall {
-    type Error: Error;
-
-    fn into_api_call(self) -> Result<APICall, Self::Error>;
-}
-
-pub type APIResult = Result<Vec<u8>, APIError>;
+use super::*;
+use call::*;
+use onebot_connect_interface::app::{
+    AppDyn, AppProviderDyn, MessageSource, MessageSourceDyn, OBApp, OBAppProvider,
+};
 
 pub trait EventContextTrait {
     type App: OBApp + 'static;
@@ -132,22 +77,6 @@ impl EventContextTrait for DynEventContext {
 
     fn into_inner(self) -> (Self::App, AppRid) {
         (self.app, self.app_uid)
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum APIError {
-    #[error("target plugin not found: {0}")]
-    PluginNotFound(PluginRid),
-    #[error("endpoint not found: {0}")]
-    EndpointNotFound(Endpoint),
-    #[error("api call error: {0}")]
-    Error(String),
-}
-
-impl APIError {
-    pub fn other<T: Display>(e: T) -> Self {
-        Self::Error(e.to_string())
     }
 }
 
@@ -282,10 +211,6 @@ impl<T: GlobalContext> GlobalContextDyn for T {
     }
 }
 
-pub struct Runtime {
-    pub logger: Option<(Box<dyn log::Log>, log::LevelFilter)>,
-}
-
 pub struct PluginContext<G: GlobalContext + 'static> {
     rid: PluginRid,
     global: G,
@@ -303,7 +228,7 @@ impl<G: GlobalContext> PluginContext<G> {
         }
     }
 
-    pub fn marker(&self) -> PluginRid {
+    pub fn rid(&self) -> PluginRid {
         self.rid
     }
 
@@ -316,7 +241,7 @@ impl<G: GlobalContext> PluginContext<G> {
         self.global.get_plugin_rid(id.as_ref())
     }
 
-    pub fn get_config_dir(&self) -> Result<PathBuf, Box<dyn Error>> {
+    pub fn get_config_dir(&self) -> Result<PathBuf, Box<dyn StdErr>> {
         self.global.get_config_dir(Some(self.rid))
     }
 

@@ -3,7 +3,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use fxhash::FxHashMap;
 use serde::Serialize;
 
-use crate::{context::*, PinBoxFut};
+use crate::*;
 
 pub type CallFut<'a> = Pin<Box<dyn Future<Output = APIResult> + Send + 'a>>;
 
@@ -17,10 +17,10 @@ pub trait HandlerTrait<I, R>: Send + Sync {
     fn handle(&self, src: PluginRid, input: I) -> PinBoxFut<Result<R, APIError>>;
 }
 
-impl<'a, I, R, F, FR> HandlerTrait<I, R> for F
+impl<I, R, F, FR> HandlerTrait<I, R> for F
 where
-    F: Fn(PluginRid, I) -> FR + Send + Sync + 'a,
-    FR: Future<Output = Result<R, APIError>> + Send + 'a,
+    F: Fn(PluginRid, I) -> FR + Send + Sync,
+    FR: Future<Output = Result<R, APIError>> + Send,
     I: Send + 'static,
 {
     fn handle(&self, src: PluginRid, input: I) -> PinBoxFut<Result<R, APIError>> {
@@ -159,15 +159,12 @@ impl APIRouter {
         &mut self,
         handler: impl APICallHandler + 'static,
     ) -> Result<(), RegError> {
-        let handlers = self.handlers.write().await;
+        let mut handlers = self.handlers.write().await;
         let endpoint = handler.endpoint();
         if handlers.contains_key(&endpoint) {
             Err(RegError::Conflicted(endpoint))
         } else {
-            self.handlers
-                .write()
-                .await
-                .insert(handler.endpoint(), Box::new(handler));
+            handlers.insert(handler.endpoint(), Box::new(handler));
             Ok(())
         }
     }

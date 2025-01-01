@@ -1,99 +1,27 @@
-use std::{hash::Hash, io, path::PathBuf, str::FromStr, sync::Arc};
+use super::*;
+use crate::*;
+use util::*;
+
+use std::{hash::Hash, path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
 use fxhash::FxHashMap;
 use onebot_connect_interface::app::{AppDyn, MessageSource, OBApp, OBAppProvider, RecvMessage};
 use rand::Rng;
-use tokio::{fs, sync::RwLock};
-
-use crate::{context::*, BResult, CarolinaPlugin, PluginInfo};
-
-#[derive(Default, Debug)]
-pub struct EventMapper {
-    type2uid: DashMap<String, DashMap<String, Vec<PluginRid>>>,
-    uid2type: DashMap<PluginRid, Vec<(String, Option<String>)>>,
-}
-
-impl EventMapper {
-    pub fn subscribe(&self, types: Vec<(String, Option<String>)>, rid: PluginRid) {
-        for (ty, detail_ty) in &types {
-            self.type2uid
-                .entry(ty.clone())
-                .or_default()
-                .entry(detail_ty.clone().unwrap_or_default())
-                .or_default()
-                .push(rid);
-        }
-
-        self.uid2type.insert(rid, types);
-    }
-
-    pub fn filter_plugins(
-        &self,
-        ty: impl AsRef<str>,
-        detail_ty: impl AsRef<str>,
-    ) -> Vec<PluginRid> {
-        self.type2uid
-            .get(ty.as_ref())
-            .map(|map| {
-                let mut collected = map
-                    .get(detail_ty.as_ref())
-                    .map(|r| r.clone())
-                    .unwrap_or_default();
-                if let Some(sub) = map.get("") {
-                    sub.iter().for_each(|r| collected.push(*r));
-                }
-                collected
-            })
-            .unwrap_or_default()
-    }
-}
-
-pub struct DirConfig {
-    pub config_path: PathBuf,
-    pub data_path: PathBuf,
-}
-impl DirConfig {
-    pub fn new(config: Option<PathBuf>, data: Option<PathBuf>) -> Self {
-        let config_path = config.unwrap_or_else(|| {
-            dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from_str(".").unwrap())
-                .join("carolina")
-        });
-        let data_path = data.unwrap_or_else(|| {
-            dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from_str(".").unwrap())
-                .join("carolina")
-        });
-
-        DirConfig {
-            config_path,
-            data_path,
-        }
-    }
-
-    pub async fn ensure_dirs(&self) -> io::Result<()> {
-        use tokio::fs;
-
-        fs::create_dir_all(&self.config_path).await?;
-        fs::create_dir_all(&self.data_path).await?;
-        Ok(())
-    }
-}
-impl Default for DirConfig {
-    fn default() -> Self {
-        Self::new(None, None)
-    }
-}
+use tokio::{
+    fs,
+    sync::{Notify, RwLock},
+};
 
 pub struct GlobalContextInner<P: CarolinaPlugin> {
-    plugin_rid_map: RwLock<FxHashMap<PluginRid, (bool, P)>>,
+    plugin_rid_map: RwLock<FxHashMap<PluginRid, (bool, UnsafePluginWrapper<P>)>>,
     plugin_id2rid: DashMap<String, PluginRid>,
     plugin_rid2info: DashMap<PluginRid, PluginInfo>,
     event_mapper: EventMapper,
 
     shared_apps: DashMap<AppRid, Box<dyn AppDyn + Sync>>,
     dir_config: DirConfig,
+    running: Completed,
 }
 
 pub struct GlobalContextImpl<P: CarolinaPlugin> {
@@ -110,7 +38,7 @@ impl<P: CarolinaPlugin> Clone for GlobalContextImpl<P> {
 
 pub struct GlobalDestructed<P: CarolinaPlugin> {
     pub plugins: FxHashMap<PluginRid, (PluginInfo, P)>,
-    pub shared_apps: DashMap<AppRid, Box<dyn AppDyn + Sync>>,
+    pub shared_apps: FxHashMap<AppRid, Box<dyn AppDyn + Sync>>,
 }
 
 impl<P: CarolinaPlugin + 'static> GlobalContextImpl<P> {
@@ -127,6 +55,7 @@ impl<P: CarolinaPlugin + 'static> GlobalContextImpl<P> {
                 plugin_rid2info: default(),
                 event_mapper: default(),
                 dir_config,
+                running: Completed::default(),
             }
             .into(),
         }
@@ -162,7 +91,7 @@ impl<P: CarolinaPlugin + 'static> GlobalContextImpl<P> {
         let subscribed = plugin.subscribe_events().await;
         log::debug!("[{id}] Subscribed event: {subscribed:?}");
         self.inner.event_mapper.subscribe(subscribed, rid);
-        map.insert(rid, (is_rt, plugin));
+        map.insert(rid, (is_rt, plugin.into()));
 
         Ok(rid)
     }
@@ -192,6 +121,8 @@ impl<P: CarolinaPlugin + 'static> GlobalContextImpl<P> {
                 on_err(*rid, id, e);
             }
         }
+
+        self.inner.running.complete();
     }
 
     /// Destruct global context for deinitiialization.
@@ -215,11 +146,20 @@ impl<P: CarolinaPlugin + 'static> GlobalContextImpl<P> {
                     continue;
                 }
             };
-            plugins.insert(rid, (info, map.remove(&rid).unwrap().1));
+            plugins.insert(rid, (info, map.remove(&rid).unwrap().1.into_inner()));
         }
-        let apps = DashMap::default();
-        for ele in self.inner.shared_apps.iter() {
-            apps.insert(*ele.key(), ele.value().clone_app() as _);
+        let mut apps = FxHashMap::default();
+        let keys = self
+            .inner
+            .shared_apps
+            .iter()
+            .map(|ele| *ele.key())
+            .collect::<Vec<_>>();
+        for ele in keys {
+            let Some((_, app)) = self.inner.shared_apps.remove(&ele) else {
+                continue;
+            };
+            apps.insert(ele, app);
         }
 
         GlobalDestructed {
@@ -262,6 +202,10 @@ impl<PL: CarolinaPlugin + 'static> GlobalContext for GlobalContextImpl<PL> {
     }
 
     async fn call_plugin_api(&self, src: PluginRid, target: PluginRid, call: APICall) -> APIResult {
+        if !self.inner.running.is_completed() && src == target {
+            return Err(APIError::other("initialization hasn't finish, cannot call self"));
+        }
+
         match self.inner.plugin_rid_map.read().await.get(&target) {
             Some(plug) => plug.1.handle_api_call(src, call).await,
             None => Err(APIError::PluginNotFound(target)),
@@ -301,6 +245,8 @@ impl<PL: CarolinaPlugin + 'static> GlobalContext for GlobalContextImpl<PL> {
         P: OBAppProvider<Output: 'static> + 'static,
         S: MessageSource + 'static,
     {
+        self.inner.running.wait().await;
+
         let app_id = rand_u64(&self.inner.shared_apps);
         if !provider.use_event_context() {
             match provider.provide() {

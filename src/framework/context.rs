@@ -8,10 +8,7 @@ use dashmap::DashMap;
 use fxhash::FxHashMap;
 use onebot_connect_interface::app::{AppDyn, MessageSource, OBApp, OBAppProvider, RecvMessage};
 use rand::Rng;
-use tokio::{
-    fs,
-    sync::{Notify, RwLock},
-};
+use tokio::{fs, sync::RwLock};
 
 pub struct GlobalContextInner<P: CarolinaPlugin> {
     plugin_rid_map: RwLock<FxHashMap<PluginRid, (bool, UnsafePluginWrapper<P>)>>,
@@ -66,7 +63,7 @@ impl<P: CarolinaPlugin + 'static> GlobalContextImpl<P> {
         mut plugin: P,
         info: PluginInfo,
         rt: Option<Runtime>,
-    ) -> BResult<PluginRid> {
+    ) -> StdResult<PluginRid> {
         let mut map = self.inner.plugin_rid_map.write().await;
         let mut rid: PluginRid;
         let mut rng = rand::thread_rng();
@@ -203,7 +200,9 @@ impl<PL: CarolinaPlugin + 'static> GlobalContext for GlobalContextImpl<PL> {
 
     async fn call_plugin_api(&self, src: PluginRid, target: PluginRid, call: APICall) -> APIResult {
         if !self.inner.running.is_completed() && src == target {
-            return Err(APIError::other("initialization hasn't finish, cannot call self"));
+            return Err(APIError::other(
+                "initialization hasn't finish, cannot call self",
+            ));
         }
 
         match self.inner.plugin_rid_map.read().await.get(&target) {
@@ -212,7 +211,7 @@ impl<PL: CarolinaPlugin + 'static> GlobalContext for GlobalContextImpl<PL> {
         }
     }
 
-    fn get_config_dir(&self, rid: Option<PluginRid>) -> crate::BResult<PathBuf> {
+    fn get_config_dir(&self, rid: Option<PluginRid>) -> crate::StdResult<PathBuf> {
         match rid {
             Some(rid) => {
                 let id = self
@@ -226,7 +225,7 @@ impl<PL: CarolinaPlugin + 'static> GlobalContext for GlobalContextImpl<PL> {
         }
     }
 
-    fn get_data_dir(&self, rid: Option<PluginRid>) -> crate::BResult<PathBuf> {
+    fn get_data_dir(&self, rid: Option<PluginRid>) -> crate::StdResult<PathBuf> {
         match rid {
             Some(rid) => {
                 let id = self
@@ -245,67 +244,85 @@ impl<PL: CarolinaPlugin + 'static> GlobalContext for GlobalContextImpl<PL> {
         P: OBAppProvider<Output: 'static> + 'static,
         S: MessageSource + 'static,
     {
-        self.inner.running.wait().await;
+        async fn handle_msg<
+            P: OBAppProvider<Output: 'static> + 'static,
+            PLG: CarolinaPlugin + 'static,
+        >(
+            plugin_rid: PluginRid,
+            msg: RecvMessage,
+            provider: &mut P,
+            inner: Arc<GlobalContextInner<PLG>>,
+            app_id: AppRid,
+        ) {
+            match msg {
+                RecvMessage::Event(event) => {
+                    if provider.use_event_context() {
+                        provider.set_event_context(&event);
+                    }
+                    let mut app = match provider.provide() {
+                        Ok(app) => app,
+                        Err(e) => {
+                            log::error!("app provider error({plugin_rid}): {e}");
+                            return;
+                        }
+                    };
 
-        let app_id = rand_u64(&self.inner.shared_apps);
-        if !provider.use_event_context() {
-            match provider.provide() {
-                Ok(app) => {
-                    self.inner.shared_apps.insert(app_id, Box::new(app));
+                    let plugins = inner
+                        .event_mapper
+                        .filter_plugins(&event.event.r#type, &event.event.detail_type);
+                    for ele in plugins {
+                        let map = inner.plugin_rid_map.read().await;
+                        let Some(plugin) = map.get(&ele) else {
+                            log::error!("unexpected error, plugin not found({ele})");
+                            continue;
+                        };
+
+                        let handle_res = plugin
+                            .1
+                            .handle_event(
+                                event.clone(),
+                                EventContext::new(app_id, OBApp::clone_app(&app)),
+                            )
+                            .await;
+                        if let Err(e) = handle_res {
+                            log::error!("plugin handle error({ele}): {e}");
+                        }
+                    }
+
+                    if let Err(e) = OBApp::release(&mut app).await {
+                        log::error!("app release error({plugin_rid} -> {app_id}): {e}");
+                    }
                 }
-                Err(e) => {
-                    log::error!("app provider error({plugin_rid}): {e}")
+                RecvMessage::Close(close) => {
+                    log::info!("Connection closed: {close:?}")
                 }
             }
         }
 
+        let wait = self.inner.running.wait();
         let inner = self.inner.clone();
         tokio::spawn(async move {
-            while let Some(msg) = source.poll_message().await {
-                match msg {
-                    RecvMessage::Event(event) => {
-                        if provider.use_event_context() {
-                            provider.set_event_context(&event);
-                        }
-                        let mut app = match provider.provide() {
-                            Ok(app) => app,
-                            Err(e) => {
-                                log::error!("app provider error({plugin_rid}): {e}");
-                                continue;
-                            }
-                        };
+            wait.await;
 
-                        let plugins = inner
-                            .event_mapper
-                            .filter_plugins(&event.event.r#type, &event.event.detail_type);
-                        for ele in plugins {
-                            let map = inner.plugin_rid_map.read().await;
-                            let Some(plugin) = map.get(&ele) else {
-                                log::error!("unexpected error, plugin not found({ele})");
-                                continue;
-                            };
-
-                            let handle_res = plugin
-                                .1
-                                .handle_event(
-                                    event.clone(),
-                                    EventContext::new(app_id, OBApp::clone_app(&app)),
-                                )
-                                .await;
-                            if let Err(e) = handle_res {
-                                log::error!("plugin handle error({ele}): {e}");
-                            }
-                        }
-
-                        if let Err(e) = OBApp::release(&mut app).await {
-                            log::error!("app release error({plugin_rid} -> {app_id}): {e}");
-                        }
+            let app_rid = rand_u64(&inner.shared_apps);
+            if !provider.use_event_context() {
+                match provider.provide() {
+                    Ok(app) => {
+                        inner.shared_apps.insert(app_rid, Box::new(app));
                     }
-                    RecvMessage::Close(close) => {
-                        log::info!("Connection closed: {close:?}")
+                    Err(e) => {
+                        log::error!("app provider error({plugin_rid}): {e}")
                     }
                 }
             }
+
+            let inner = inner.clone();
+            log::info!("{plugin_rid:?} registerd OneBot app: {app_rid:?}");
+            tokio::spawn(async move {
+                while let Some(msg) = source.poll_message().await {
+                    handle_msg(plugin_rid, msg, &mut provider, inner.clone(), app_rid).await
+                }
+            });
         });
     }
 }

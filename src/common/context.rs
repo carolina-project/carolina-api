@@ -1,12 +1,12 @@
 use std::{future::Future, ops::Deref, path::PathBuf, pin::Pin, sync::Arc};
 
-use crate::BResult;
+use crate::StdResult;
 
 use super::*;
 use call::*;
-use onebot_connect_interface::app::{
+use onebot_connect_interface::{app::{
     AppDyn, AppProviderDyn, MessageSource, MessageSourceDyn, OBApp, OBAppProvider,
-};
+}, value::Value};
 
 pub trait EventContextTrait {
     type App: OBApp + 'static;
@@ -99,9 +99,9 @@ pub trait GlobalContext: Send + Sync {
         P: OBAppProvider<Output: 'static> + 'static,
         S: MessageSource + 'static;
 
-    fn get_config_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf>;
+    fn get_config_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf>;
 
-    fn get_data_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf>;
+    fn get_data_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf>;
 }
 
 pub trait GlobalContextDyn: Send + Sync {
@@ -125,9 +125,9 @@ pub trait GlobalContextDyn: Send + Sync {
         source: Box<dyn MessageSourceDyn>,
     );
 
-    fn get_config_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf>;
+    fn get_config_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf>;
 
-    fn get_data_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf>;
+    fn get_data_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf>;
 }
 
 // For parameter passing
@@ -162,11 +162,11 @@ impl<'a> GlobalContext for Box<dyn GlobalContextDyn + 'a> {
             .register_connect(rid, Box::new(provider), Box::new(source));
     }
 
-    fn get_config_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf> {
+    fn get_config_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf> {
         self.deref().get_config_dir(rid)
     }
 
-    fn get_data_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf> {
+    fn get_data_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf> {
         self.deref().get_data_dir(rid)
     }
 }
@@ -202,11 +202,11 @@ impl<T: GlobalContext> GlobalContextDyn for T {
         self.register_connect(rid, provider, source)
     }
 
-    fn get_config_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf> {
+    fn get_config_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf> {
         self.get_config_dir(rid)
     }
 
-    fn get_data_dir(&self, rid: Option<PluginRid>) -> BResult<PathBuf> {
+    fn get_data_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf> {
         self.get_data_dir(rid)
     }
 }
@@ -290,7 +290,7 @@ impl<G: GlobalContext> PluginContext<G> {
         Arc::new(self.into_dyn())
     }
 
-    pub async fn call_api<C, E>(&self, target: PluginRid, call: C) -> Result<Vec<u8>, APIError>
+    pub async fn call_api<C, E>(&self, target: PluginRid, call: C) -> Result<Value, APIError>
     where
         C: IntoAPICall<Error = E>,
         E: Display,

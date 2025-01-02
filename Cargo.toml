@@ -16,12 +16,11 @@ fxhash = "0.2"
 log = { version = "0.4", features = ["std"] }
 rand = { version = "0.8", optional = true }
 dashmap = { version = "6", optional = true }
-bincode = { version = "1", optional = true }
 tokio = { version = "*", default-features = false, features = ["sync", "rt-multi-thread"] }
 dirs = { version = "5", optional = true }
 
 [features]
-plugin = ["bincode"]
+plugin = []
 framework = [
     "tokio/fs",
     "dashmap",

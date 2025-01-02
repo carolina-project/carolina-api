@@ -1,8 +1,9 @@
 use crate::*;
 use tokio::runtime as tok_rt;
 
+use std::future::Future;
 use std::{error::Error as ErrTrait, fmt::Display};
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 struct UnsafePlugin<P: CarolinaPlugin>(P);
 
@@ -91,7 +92,7 @@ impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
     }
 
     #[allow(unused)]
-    async fn init<G: GlobalContext>(&mut self, context: PluginContext<G>) -> BResult<()> {
+    async fn init<G: GlobalContext>(&mut self, context: PluginContext<G>) -> StdResult<()> {
         let mut plugin = self.plugin.as_ref_mut();
         self.async_rt
             .spawn(async move { plugin.init(context).await.map_err(StringError::boxed) })

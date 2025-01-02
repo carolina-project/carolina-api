@@ -1,3 +1,5 @@
+use onebot_connect_interface::value::Value;
+
 use super::*;
 
 #[derive(Debug, thiserror::Error)]
@@ -19,7 +21,7 @@ impl APIError {
 #[derive(Debug, Clone)]
 pub struct APICall {
     pub endpoint: Endpoint,
-    pub payload: Vec<u8>,
+    pub payload: Value,
 }
 
 pub trait IntoAPICall {
@@ -28,4 +30,4 @@ pub trait IntoAPICall {
     fn into_api_call(self) -> Result<APICall, Self::Error>;
 }
 
-pub type APIResult = Result<Vec<u8>, APIError>;
+pub type APIResult = Result<Value, APIError>;

@@ -3,8 +3,9 @@ use std::fmt::Display;
 
 mod call;
 mod context;
+mod plugin;
 
-pub use {call::*, context::*};
+pub use {call::*, context::*, plugin::*};
 
 macro_rules! wrap {
     ($name:ident, $ty:ty $(, $doc:literal)?) => {

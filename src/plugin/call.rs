@@ -1,6 +1,7 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use fxhash::FxHashMap;
+use oc_interface::value::{self, Value};
 use serde::Serialize;
 
 use crate::*;
@@ -10,9 +11,10 @@ pub type CallFut<'a> = Pin<Box<dyn Future<Output = APIResult> + Send + 'a>>;
 pub trait APICallHandler: Send + Sync {
     fn endpoint(&self) -> Endpoint;
 
-    fn handle(&self, src: PluginRid, payload: Vec<u8>) -> CallFut;
+    fn handle(&self, src: PluginRid, payload: Value) -> CallFut;
 }
 
+/// A trait for handling API calls with input and output types.
 pub trait HandlerTrait<I, R>: Send + Sync {
     fn handle(&self, src: PluginRid, input: I) -> PinBoxFut<Result<R, APIError>>;
 }
@@ -30,13 +32,13 @@ where
 
 pub struct FnHandler {
     endpoint: Endpoint,
-    handler: Box<dyn HandlerTrait<Vec<u8>, Vec<u8>>>,
+    handler: Box<dyn HandlerTrait<Value, Value>>,
 }
 
 impl FnHandler {
     pub fn new<H>(endpoint: impl Into<Endpoint>, handler: H) -> Self
     where
-        H: HandlerTrait<Vec<u8>, Vec<u8>> + 'static,
+        H: HandlerTrait<Value, Value> + 'static,
     {
         FnHandler {
             endpoint: endpoint.into(),
@@ -50,19 +52,18 @@ impl APICallHandler for FnHandler {
         self.endpoint
     }
 
-    fn handle(&self, src: PluginRid, payload: Vec<u8>) -> CallFut {
+    fn handle(&self, src: PluginRid, payload: Value) -> CallFut {
         self.handler.handle(src, payload)
     }
 }
 
-#[cfg(feature = "bincode")]
-mod deser_handler {
+mod serde_handler {
     use std::future;
 
     use super::*;
     use serde::Deserialize;
 
-    pub struct BincodeHandler<I, R>
+    pub struct SerdeHandler<I, R>
     where
         I: for<'de> Deserialize<'de>,
         R: Serialize,
@@ -71,7 +72,7 @@ mod deser_handler {
         handler: Box<dyn HandlerTrait<I, R>>,
     }
 
-    impl<I, R> BincodeHandler<I, R>
+    impl<I, R> SerdeHandler<I, R>
     where
         I: for<'de> Deserialize<'de>,
         R: Serialize,
@@ -80,14 +81,14 @@ mod deser_handler {
         where
             H: HandlerTrait<I, R> + 'static,
         {
-            BincodeHandler {
+            SerdeHandler {
                 endpoint: endpoint.into(),
                 handler: Box::new(handler),
             }
         }
     }
 
-    impl<I, R> APICallHandler for BincodeHandler<I, R>
+    impl<I, R> APICallHandler for SerdeHandler<I, R>
     where
         I: for<'de> Deserialize<'de>,
         R: Serialize,
@@ -96,50 +97,47 @@ mod deser_handler {
             self.endpoint
         }
 
-        fn handle(&self, src: PluginRid, payload: Vec<u8>) -> CallFut {
-            match bincode::deserialize(&payload) {
+        fn handle(&self, src: PluginRid, payload: Value) -> CallFut {
+            match I::deserialize(payload) {
                 Ok(data) => {
                     let fut = self.handler.handle(src, data);
-                    Box::pin(
-                        async move { bincode::serialize(&fut.await?).map_err(APIError::other) },
-                    )
+                    Box::pin(async move { value::to_value(fut.await?).map_err(APIError::other) })
                 }
                 Err(e) => Box::pin(future::ready(Err(APIError::other(e)))),
             }
         }
     }
 
-    pub trait BincodeAPICall: serde::Serialize {
+    pub trait SerdeAPICall: serde::Serialize {
         type Output: for<'de> Deserialize<'de>;
 
         fn endpoint(&self) -> Endpoint;
     }
 
     impl<G: GlobalContext> PluginContext<G> {
-        pub async fn call_bincode_api<C: BincodeAPICall>(
+        pub async fn call_bincode_api<C: SerdeAPICall>(
             &self,
             target: PluginRid,
             call: C,
         ) -> Result<C::Output, APIError> {
             let resp = self.call_api(target, call).await?;
-            bincode::deserialize(&resp).map_err(APIError::other)
+            C::Output::deserialize(resp).map_err(APIError::other)
         }
     }
 
-    impl<T: BincodeAPICall> IntoAPICall for T {
-        type Error = bincode::Error;
+    impl<T: SerdeAPICall> IntoAPICall for T {
+        type Error = value::SerializerError;
 
         fn into_api_call(self) -> Result<APICall, Self::Error> {
             Ok(APICall {
                 endpoint: self.endpoint(),
-                payload: bincode::serialize(&self)?,
+                payload: value::to_value(&self)?,
             })
         }
     }
 }
 
-#[cfg(feature = "bincode")]
-pub use deser_handler::*;
+pub use serde_handler::*;
 
 type Handlers = Arc<tokio::sync::RwLock<FxHashMap<Endpoint, Box<dyn APICallHandler>>>>;
 
@@ -169,7 +167,7 @@ impl APIRouter {
         }
     }
 
-    pub async fn handle(&self, src: PluginRid, call: APICall) -> Result<Vec<u8>, APIError> {
+    pub async fn handle(&self, src: PluginRid, call: APICall) -> Result<Value, APIError> {
         let APICall {
             endpoint, payload, ..
         } = call;

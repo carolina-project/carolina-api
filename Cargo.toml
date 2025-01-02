@@ -9,21 +9,11 @@ edition = "2021"
 [dependencies]
 carolina-api-macros = { path = "./carolina-api-macros" }
 onebot-connect-interface = { path = "../onebot-connect/onebot-connect-interface", features = ["app_recv"]}
-uuid = "1"
 serde = "1"
 thiserror = "2"
 fxhash = "0.2"
 log = { version = "0.4", features = ["std"] }
-rand = { version = "0.8", optional = true }
-dashmap = { version = "6", optional = true }
 tokio = { version = "*", default-features = false, features = ["sync", "rt-multi-thread"] }
-dirs = { version = "5", optional = true }
 
 [features]
 plugin = []
-framework = [
-    "tokio/fs",
-    "dashmap",
-    "dep:rand",
-    "dep:dirs",
-]

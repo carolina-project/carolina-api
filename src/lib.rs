@@ -1,7 +1,5 @@
 pub mod common;
 
-#[cfg(feature = "framework")]
-pub mod framework;
 #[cfg(feature = "plugin")]
 pub mod plugin;
 

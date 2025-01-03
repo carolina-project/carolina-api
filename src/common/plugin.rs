@@ -1,6 +1,7 @@
 use std::{
     future::Future,
-    ops::{Deref, DerefMut}, pin::Pin,
+    ops::{Deref, DerefMut},
+    pin::Pin,
 };
 
 use crate::*;
@@ -135,10 +136,10 @@ mod caro_plugin {
     use crate::PluginInfo;
     use crate::{APICall, APIError, APIResult, PluginContext, PluginRid};
     use crate::{EventContextTrait, GlobalContext};
-    use std::error::Error as ErrTrait;
     use std::future;
     use std::{error::Error, future::Future};
-    type BResult<T> = Result<T, Box<dyn ErrTrait>>;
+
+    use super::StdResult;
 
     pub trait CarolinaPlugin: Send + Sync {
         fn info(&self) -> PluginInfo;
@@ -147,7 +148,7 @@ mod caro_plugin {
         fn init<G: GlobalContext>(
             &mut self,
             context: PluginContext<G>,
-        ) -> impl Future<Output = BResult<()>> + Send + '_ {
+        ) -> impl Future<Output = StdResult<()>> + Send + '_ {
             async { Ok(()) }
         }
 

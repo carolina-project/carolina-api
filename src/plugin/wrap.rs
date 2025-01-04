@@ -2,8 +2,8 @@ use crate::*;
 use tokio::runtime as tok_rt;
 
 use std::future::Future;
-use std::{error::Error as ErrTrait, fmt::Display};
 use std::ops::{Deref, DerefMut};
+use std::{error::Error as ErrTrait, fmt::Display};
 
 struct UnsafePlugin<P: CarolinaPlugin>(P);
 
@@ -112,9 +112,7 @@ impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
             .map_err(|e| e as _)
     }
 
-    fn subscribe_events(
-        &mut self,
-    ) -> impl Future<Output = Vec<(String, Option<String>)>> + Send + '_ {
+    fn subscribe_events(&mut self) -> impl Future<Output = Vec<Subscribe>> + Send + '_ {
         let mut plugin = self.plugin.as_ref_mut();
         async move {
             self.async_rt
@@ -128,7 +126,7 @@ impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
         &self,
         event: RawEvent,
         context: EC,
-    ) -> Result<(), Box<dyn std::error::Error>>
+    ) -> Result<EventState, Box<dyn std::error::Error>>
     where
         EC: EventContextTrait + Send + 'static,
     {
@@ -155,7 +153,13 @@ impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
     async fn deinit(self) -> Result<(), Box<dyn std::error::Error>> {
         let DynPlugin { plugin, async_rt } = self;
         async_rt
-            .spawn(async move { plugin.into_inner().deinit().await.map_err(StringError::boxed) })
+            .spawn(async move {
+                plugin
+                    .into_inner()
+                    .deinit()
+                    .await
+                    .map_err(StringError::boxed)
+            })
             .await?
             .map_err(|e| e as _)
     }

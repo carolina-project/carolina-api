@@ -116,13 +116,13 @@ macro_rules! plugin_info {
 }
 
 pub trait SelectorExt {
-    fn subscribe() -> Vec<(String, Option<String>)>;
+    fn subscribe() -> Vec<Subscribe>;
 }
 impl<T: OBEventSelector> SelectorExt for T {
-    fn subscribe() -> Vec<(String, Option<String>)> {
+    fn subscribe() -> Vec<Subscribe> {
         Self::get_selectable()
             .iter()
-            .map(|desc| (desc.r#type.to_owned(), Some(desc.detail_type.to_owned())))
+            .map(|desc| Subscribe::new(desc.r#type.to_owned(), Some(desc.detail_type.to_owned())))
             .collect()
     }
 }
@@ -137,9 +137,9 @@ mod caro_plugin {
     use crate::{APICall, APIError, APIResult, PluginContext, PluginRid};
     use crate::{EventContextTrait, GlobalContext};
     use std::future;
-    use std::{error::Error, future::Future};
+    use std::future::Future;
 
-    use super::StdResult;
+    use crate::{EventState, Subscribe};
 
     pub trait CarolinaPlugin: Send + Sync {
         fn info(&self) -> PluginInfo;
@@ -148,7 +148,7 @@ mod caro_plugin {
         fn init<G: GlobalContext>(
             &mut self,
             context: PluginContext<G>,
-        ) -> impl Future<Output = StdResult<()>> + Send + '_ {
+        ) -> impl Future<Output = Result<(), Box<dyn std::error::Error>>> + Send + '_ {
             async { Ok(()) }
         }
 
@@ -156,13 +156,11 @@ mod caro_plugin {
         fn post_init<G: GlobalContext>(
             &mut self,
             context: PluginContext<G>,
-        ) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_ {
+        ) -> impl Future<Output = Result<(), Box<dyn std::error::Error>>> + Send + '_ {
             async { Ok(()) }
         }
 
-        fn subscribe_events(
-            &mut self,
-        ) -> impl Future<Output = Vec<(String, Option<String>)>> + Send + '_ {
+        fn subscribe_events(&mut self) -> impl Future<Output = Vec<Subscribe>> + Send + '_ {
             future::ready(vec![])
         }
 
@@ -171,11 +169,11 @@ mod caro_plugin {
             &self,
             event: RawEvent,
             context: EC,
-        ) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send + '_
+        ) -> impl Future<Output = Result<EventState, Box<dyn std::error::Error>>> + Send + '_
         where
             EC: EventContextTrait + Send + 'static,
         {
-            async { Ok(()) }
+            async { Ok(EventState::Pass) }
         }
 
         #[allow(unused)]
@@ -187,7 +185,7 @@ mod caro_plugin {
             future::ready(Err(APIError::EndpointNotFound(call.endpoint)))
         }
 
-        fn deinit(self) -> impl Future<Output = Result<(), Box<dyn Error>>> + Send
+        fn deinit(self) -> impl Future<Output = Result<(), Box<dyn std::error::Error>>> + Send
         where
             Self: Sized,
         {
@@ -207,9 +205,9 @@ pub trait CarolinaPluginDyn: Send + Sync + 'static {
 
     fn post_init(&mut self, context: PluginContext<Box<dyn GlobalContextDyn>>) -> PinBoxResult<()>;
 
-    fn subscribe_events(&mut self) -> PinBoxFut<Vec<(String, Option<String>)>>;
+    fn subscribe_events(&mut self) -> PinBoxFut<Vec<Subscribe>>;
 
-    fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()>;
+    fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<EventState>;
 
     fn handle_api_call(&self, src: PluginRid, call: APICall) -> PinBoxAPIResult;
 
@@ -229,11 +227,11 @@ impl<T: CarolinaPlugin + 'static> CarolinaPluginDyn for T {
         Box::pin(self.post_init(context))
     }
 
-    fn subscribe_events(&mut self) -> PinBoxFut<Vec<(String, Option<String>)>> {
+    fn subscribe_events(&mut self) -> PinBoxFut<Vec<Subscribe>> {
         Box::pin(self.subscribe_events())
     }
 
-    fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<()> {
+    fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<EventState> {
         Box::pin(self.handle_event(event, context))
     }
 
@@ -266,9 +264,7 @@ impl<'a> CarolinaPlugin for Box<dyn CarolinaPluginDyn + 'a> {
         self.deref_mut().post_init(context.into_dyn())
     }
 
-    fn subscribe_events(
-        &mut self,
-    ) -> impl Future<Output = Vec<(String, Option<String>)>> + Send + '_ {
+    fn subscribe_events(&mut self) -> impl Future<Output = Vec<Subscribe>> + Send + '_ {
         self.deref_mut().subscribe_events()
     }
 
@@ -288,7 +284,7 @@ impl<'a> CarolinaPlugin for Box<dyn CarolinaPluginDyn + 'a> {
         &self,
         event: RawEvent,
         context: EC,
-    ) -> impl Future<Output = StdResult<()>> + Send + '_
+    ) -> impl Future<Output = StdResult<EventState>> + Send + '_
     where
         EC: EventContextTrait + Send + 'static,
     {

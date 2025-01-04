@@ -51,3 +51,48 @@ wrap!(Endpoint, u64);
 pub struct Runtime {
     pub logger: Option<(Box<dyn log::Log>, log::LevelFilter)>,
 }
+
+#[derive(Debug, Clone, Copy, Default)]
+pub enum Priority {
+    High,
+    #[default]
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EventState {
+    #[default]
+    Pass,
+    Intercept,
+}
+
+pub fn pass<E>() -> Result<EventState, E> {
+    Ok(EventState::Pass)
+}
+
+pub fn intercept<E>() -> Result<EventState, E> {
+    Ok(EventState::Intercept)
+}
+
+#[derive(Debug, Clone)]
+pub struct Subscribe {
+    pub event_type: String,
+    pub detail_type: Option<String>,
+    pub priority: Priority,
+}
+
+impl Subscribe {
+    pub fn new(event_type: impl Into<String>, detail_type: Option<impl Into<String>>) -> Self {
+        Self {
+            event_type: event_type.into(),
+            detail_type: detail_type.map(|r| r.into()),
+            priority: Priority::Medium,
+        }
+    }
+
+    pub fn priority(mut self, priority: Priority) -> Self {
+        self.priority = priority;
+        self
+    }
+}

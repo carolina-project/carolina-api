@@ -4,9 +4,10 @@ use crate::StdResult;
 
 use super::*;
 use call::*;
-use onebot_connect_interface::{app::{
-    AppDyn, AppProviderDyn, MessageSource, MessageSourceDyn, OBApp, OBAppProvider,
-}, value::Value};
+use onebot_connect_interface::{
+    app::{AppDyn, AppProviderDyn, MessageSource, MessageSourceDyn, OBApp, OBAppProvider},
+    value::Value,
+};
 
 pub trait EventContextTrait {
     type App: OBApp + 'static;
@@ -243,6 +244,10 @@ impl<G: GlobalContext> PluginContext<G> {
 
     pub fn get_config_dir(&self) -> Result<PathBuf, Box<dyn StdErr>> {
         self.global.get_config_dir(Some(self.rid))
+    }
+
+    pub fn get_data_dir(&self) -> Result<PathBuf, Box<dyn StdErr>> {
+        self.global.get_data_dir(Some(self.rid))
     }
 
     pub fn register_connect(

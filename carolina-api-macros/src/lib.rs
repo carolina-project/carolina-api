@@ -7,6 +7,7 @@ mod plugin;
 ///
 /// Imported types in the module will be provided when using macros to generate static dispatching
 /// enum, and the trait will be exported.
+/// Use **absolute module path** when importing.
 #[proc_macro_attribute]
 pub fn plugin_api(attr: TokenStream, input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as ItemMod);

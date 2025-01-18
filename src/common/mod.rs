@@ -1,9 +1,11 @@
-use std::error::Error as StdErr;
 use std::fmt::Display;
+use std::{error::Error as StdErr, future::Future};
 
 mod call;
 mod context;
 mod plugin;
+
+use crate::StdResult;
 
 pub use {call::*, context::*, plugin::*};
 
@@ -52,12 +54,26 @@ pub struct Runtime {
     pub logger: Option<(Box<dyn log::Log>, log::LevelFilter)>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Priority {
-    High,
+    Lowest,
+    Low,
     #[default]
     Medium,
-    Low,
+    High,
+    Highest,
+}
+
+impl Priority {
+    pub const fn sorted() -> &'static [Priority] {
+        &[
+            Priority::Highest,
+            Priority::High,
+            Priority::Medium,
+            Priority::Low,
+            Priority::Lowest,
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -87,7 +103,7 @@ impl Subscribe {
         Self {
             event_type: event_type.into(),
             detail_type: detail_type.map(|r| r.into()),
-            priority: Priority::Medium,
+            priority: Priority::default(),
         }
     }
 
@@ -95,4 +111,14 @@ impl Subscribe {
         self.priority = priority;
         self
     }
+}
+
+pub type BoxedCallbackFn<'a, R = StdResult<()>> = Box<dyn FnOnce() -> PinBoxFut<'a, R> + Send + 'a>;
+
+fn boxed_async_cb<'a, F, R, FR>(f: F) -> BoxedCallbackFn<'a, R>
+where
+    F: FnOnce() -> FR + Send + 'a,
+    FR: Future<Output = R> + Send + 'a,
+{
+    Box::new(move || Box::pin(f()))
 }

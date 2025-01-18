@@ -3,7 +3,7 @@ use tokio::runtime as tok_rt;
 
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
-use std::{error::Error as ErrTrait, fmt::Display};
+use std::{error::Error as StdErr, fmt::Display};
 
 struct UnsafePlugin<P: CarolinaPlugin>(P);
 
@@ -73,7 +73,7 @@ impl<P: CarolinaPlugin> DynPlugin<P> {
 #[derive(Debug)]
 struct StringError(String);
 impl StringError {
-    fn boxed<T: Display>(msg: T) -> Box<dyn ErrTrait + Send> {
+    fn boxed<T: Display>(msg: T) -> Box<dyn StdErr + Send> {
         Box::new(Self(msg.to_string()))
     }
 }
@@ -83,7 +83,7 @@ impl Display for StringError {
         write!(f, "{}", self.0)
     }
 }
-impl ErrTrait for StringError {}
+impl StdErr for StringError {}
 
 impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
     fn info(&self) -> PluginInfo {
@@ -124,7 +124,7 @@ impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
 
     async fn handle_event<EC>(
         &self,
-        event: RawEvent,
+        event: SharedEvent,
         context: EC,
     ) -> Result<EventState, Box<dyn std::error::Error>>
     where

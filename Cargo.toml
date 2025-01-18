@@ -8,7 +8,7 @@ edition = "2021"
 
 [dependencies]
 carolina-api-macros = { path = "./carolina-api-macros" }
-onebot-connect-interface = { path = "../onebot-connect/onebot-connect-interface", features = ["app_recv"]}
+onebot-connect-interface = { git = "https://github.com/carolina-project/onebot-connect.git", features = ["app_recv"]}
 serde = "1"
 thiserror = "2"
 fxhash = "0.2"

@@ -30,17 +30,14 @@ impl<A: OBApp> EventContext<A> {
 impl<A: OBApp> EventContextTrait for EventContext<A> {
     type App = A;
 
-    #[inline]
     fn app(&self) -> &Self::App {
         &self.app
     }
 
-    #[inline]
     fn app_marker(&self) -> AppRid {
         self.marker
     }
 
-    #[inline]
     fn into_inner(self) -> (Self::App, AppRid) {
         (self.app, self.marker)
     }
@@ -95,10 +92,17 @@ pub trait GlobalContext: Send + Sync {
         call: APICall,
     ) -> impl Future<Output = APIResult> + Send + '_;
 
-    fn register_connect<P, S>(&self, rid: PluginRid, provider: P, source: S)
-    where
+    fn register_connect<F, FR, P, S>(
+        &self,
+        rid: PluginRid,
+        provider: P,
+        source: S,
+        close_callback: F,
+    ) where
         P: OBAppProvider<Output: 'static> + 'static,
-        S: MessageSource + 'static;
+        S: MessageSource + 'static,
+        F: FnOnce() -> FR + Send + 'static,
+        FR: Future<Output = StdResult<()>> + Send + 'static;
 
     fn get_config_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf>;
 
@@ -124,6 +128,7 @@ pub trait GlobalContextDyn: Send + Sync {
         rid: PluginRid,
         provider: Box<dyn AppProviderDyn>,
         source: Box<dyn MessageSourceDyn>,
+        close_callback: BoxedCallbackFn<'static>,
     );
 
     fn get_config_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf>;
@@ -154,13 +159,24 @@ impl<'a> GlobalContext for Box<dyn GlobalContextDyn + 'a> {
         self.deref().call_plugin_api(src, target, call)
     }
 
-    fn register_connect<P, S>(&self, rid: PluginRid, provider: P, source: S)
-    where
+    fn register_connect<F, FR, P, S>(
+        &self,
+        rid: PluginRid,
+        provider: P,
+        source: S,
+        close_callback: F,
+    ) where
         P: OBAppProvider<Output: 'static> + 'static,
         S: MessageSource + 'static,
+        F: FnOnce() -> FR + Send + 'static,
+        FR: Future<Output = StdResult<()>> + Send + 'static,
     {
-        self.deref()
-            .register_connect(rid, Box::new(provider), Box::new(source));
+        self.deref().register_connect(
+            rid,
+            Box::new(provider),
+            Box::new(source),
+            boxed_async_cb(close_callback),
+        );
     }
 
     fn get_config_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf> {
@@ -199,8 +215,9 @@ impl<T: GlobalContext> GlobalContextDyn for T {
         rid: PluginRid,
         provider: Box<dyn AppProviderDyn>,
         source: Box<dyn MessageSourceDyn>,
+        close_callback: BoxedCallbackFn<'static>,
     ) {
-        self.register_connect(rid, provider, source)
+        self.register_connect(rid, provider, source, close_callback);
     }
 
     fn get_config_dir(&self, rid: Option<PluginRid>) -> StdResult<PathBuf> {
@@ -250,12 +267,17 @@ impl<G: GlobalContext> PluginContext<G> {
         self.global.get_data_dir(Some(self.rid))
     }
 
-    pub fn register_connect(
+    pub fn register_connect<F, FR>(
         &self,
         provider: impl OBAppProvider + 'static,
         source: impl MessageSource + 'static,
-    ) {
-        self.global.register_connect(self.rid, provider, source)
+        close_callback: F,
+    ) where
+        F: FnOnce() -> FR + Send + 'static,
+        FR: Future<Output = StdResult<()>> + Send + 'static,
+    {
+        self.global
+            .register_connect(self.rid, provider, source, close_callback)
     }
 
     pub fn at_runtime(&self) -> bool {

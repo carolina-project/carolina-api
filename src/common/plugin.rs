@@ -2,6 +2,7 @@ use std::{
     future::Future,
     ops::{Deref, DerefMut},
     pin::Pin,
+    sync::Arc,
 };
 
 use crate::*;
@@ -132,13 +133,13 @@ impl<T: OBEventSelector> SelectorExt for T {
     dyn_wrap = plugin::DynPlugin,
 )]
 mod caro_plugin {
-    use crate::types::ob12::event::RawEvent;
     use crate::PluginInfo;
     use crate::{APICall, APIError, APIResult, PluginContext, PluginRid};
     use crate::{EventContextTrait, GlobalContext};
     use std::future;
     use std::future::Future;
 
+    use crate::{pass, SharedEvent};
     use crate::{EventState, Subscribe};
 
     pub trait CarolinaPlugin: Send + Sync {
@@ -167,13 +168,13 @@ mod caro_plugin {
         #[allow(unused)]
         fn handle_event<EC>(
             &self,
-            event: RawEvent,
+            event: SharedEvent,
             context: EC,
         ) -> impl Future<Output = Result<EventState, Box<dyn std::error::Error>>> + Send + '_
         where
             EC: EventContextTrait + Send + 'static,
         {
-            async { Ok(EventState::Pass) }
+            async { pass() }
         }
 
         #[allow(unused)]
@@ -197,6 +198,7 @@ mod caro_plugin {
 pub type PinBoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type PinBoxResult<'a, T> = PinBoxFut<'a, Result<T, Box<dyn StdErr>>>;
 pub type PinBoxAPIResult<'a> = PinBoxFut<'a, APIResult>;
+pub type SharedEvent = Arc<RawEvent>;
 
 pub trait CarolinaPluginDyn: Send + Sync + 'static {
     fn info(&self) -> PluginInfo;
@@ -207,7 +209,11 @@ pub trait CarolinaPluginDyn: Send + Sync + 'static {
 
     fn subscribe_events(&mut self) -> PinBoxFut<Vec<Subscribe>>;
 
-    fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<EventState>;
+    fn handle_event(
+        &self,
+        event: SharedEvent,
+        context: DynEventContext,
+    ) -> PinBoxResult<EventState>;
 
     fn handle_api_call(&self, src: PluginRid, call: APICall) -> PinBoxAPIResult;
 
@@ -231,7 +237,11 @@ impl<T: CarolinaPlugin + 'static> CarolinaPluginDyn for T {
         Box::pin(self.subscribe_events())
     }
 
-    fn handle_event(&self, event: RawEvent, context: DynEventContext) -> PinBoxResult<EventState> {
+    fn handle_event(
+        &self,
+        event: SharedEvent,
+        context: DynEventContext,
+    ) -> PinBoxResult<EventState> {
         Box::pin(self.handle_event(event, context))
     }
 
@@ -282,7 +292,7 @@ impl<'a> CarolinaPlugin for Box<dyn CarolinaPluginDyn + 'a> {
 
     fn handle_event<EC>(
         &self,
-        event: RawEvent,
+        event: SharedEvent,
         context: EC,
     ) -> impl Future<Output = StdResult<EventState>> + Send + '_
     where

@@ -1,9 +1,9 @@
 use crate::*;
 use tokio::runtime as tok_rt;
 
+use common::ErrorDisplay;
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
-use std::{error::Error as StdErr, fmt::Display};
 
 struct UnsafePlugin<P: CarolinaPlugin>(P);
 
@@ -70,21 +70,6 @@ impl<P: CarolinaPlugin> DynPlugin<P> {
     }
 }
 
-#[derive(Debug)]
-struct StringError(String);
-impl StringError {
-    fn boxed<T: Display>(msg: T) -> Box<dyn StdErr + Send> {
-        Box::new(Self(msg.to_string()))
-    }
-}
-
-impl Display for StringError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-impl StdErr for StringError {}
-
 impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
     fn info(&self) -> PluginInfo {
         let _guard = self.async_rt.enter();
@@ -95,7 +80,7 @@ impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
     async fn init<G: GlobalContext>(&mut self, context: PluginContext<G>) -> StdResult<()> {
         let mut plugin = self.plugin.as_ref_mut();
         self.async_rt
-            .spawn(async move { plugin.init(context).await.map_err(StringError::boxed) })
+            .spawn(async move { plugin.init(context).await.map_err(ErrorDisplay::boxed_send) })
             .await?
             .map_err(|e| e as _)
     }
@@ -107,7 +92,12 @@ impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut plugin = self.plugin.as_ref_mut();
         self.async_rt
-            .spawn(async move { plugin.post_init(context).await.map_err(StringError::boxed) })
+            .spawn(async move {
+                plugin
+                    .post_init(context)
+                    .await
+                    .map_err(ErrorDisplay::boxed_send)
+            })
             .await?
             .map_err(|e| e as _)
     }
@@ -136,7 +126,7 @@ impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
                 plugin
                     .handle_event(event, context)
                     .await
-                    .map_err(StringError::boxed)
+                    .map_err(ErrorDisplay::boxed_send)
             })
             .await?
             .map_err(|e| e as _)
@@ -158,7 +148,7 @@ impl<P: CarolinaPlugin> CarolinaPlugin for DynPlugin<P> {
                     .into_inner()
                     .deinit()
                     .await
-                    .map_err(StringError::boxed)
+                    .map_err(ErrorDisplay::boxed_send)
             })
             .await?
             .map_err(|e| e as _)

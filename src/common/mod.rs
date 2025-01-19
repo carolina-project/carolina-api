@@ -9,10 +9,12 @@ use crate::StdResult;
 
 pub use {call::*, context::*, plugin::*};
 
-macro_rules! wrap {
+macro_rules! id_type {
     ($name:ident, $ty:ty $(, $doc:literal)?) => {
         $(#[doc = $doc])?
-        #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, serde::Serialize, serde::Deserialize)]
+        #[derive(
+            Debug, PartialEq, Eq, Ord, PartialOrd, Hash, Clone, Copy, serde::Serialize, serde::Deserialize
+        )]
         pub struct $name($ty);
 
         impl $name {
@@ -40,15 +42,15 @@ macro_rules! wrap {
         }
         impl Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, concat!(stringify!($name), "({})"), self.0)
+                write!(f, "{}", self.0)
             }
         }
     };
 }
 
-wrap!(AppRid, u64, "OneBot application side's runtime id.");
-wrap!(PluginRid, u64, "Plugin's runtime id.");
-wrap!(Endpoint, u64);
+id_type!(AppRid, u64, "OneBot application side's runtime id.");
+id_type!(PluginRid, u64, "Plugin's runtime id.");
+id_type!(Endpoint, u64, "Plugin api call endpoint id.");
 
 pub struct Runtime {
     pub logger: Option<(Box<dyn log::Log>, log::LevelFilter)>,
@@ -122,3 +124,19 @@ where
 {
     Box::new(move || Box::pin(f()))
 }
+
+#[derive(Debug)]
+pub struct ErrorDisplay(String);
+
+impl ErrorDisplay {
+    pub fn boxed_send<T: Display>(msg: T) -> Box<dyn StdErr + Send> {
+        Box::new(Self(msg.to_string()))
+    }
+}
+
+impl Display for ErrorDisplay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+impl StdErr for ErrorDisplay {}

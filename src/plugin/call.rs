@@ -115,7 +115,7 @@ mod serde_handler {
     }
 
     impl<G: GlobalContext> PluginContext<G> {
-        pub async fn call_bincode_api<C: SerdeAPICall>(
+        pub async fn call_serde_api<C: SerdeAPICall>(
             &self,
             target: PluginRid,
             call: C,
